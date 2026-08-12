@@ -52,6 +52,7 @@ describe("PiSubagentsAdapter", () => {
     });
     expect(observed.mock.calls[0]?.[0].options).not.toHaveProperty("run_in_background");
     expect(observed.mock.calls[0]?.[0].options).not.toHaveProperty("configCwd");
+    expect(observed.mock.calls[0]?.[0].options).not.toHaveProperty("isolation");
   });
 
   it("forwards lifecycle events", () => {

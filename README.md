@@ -90,6 +90,8 @@ workspace/                 # no .git required
 
 Start Pi from `workspace`, run `forge-prd`, and select a Target Repository from `forge_prd_repositories` when more than one is found. Forge asks Git for the canonical top-level Working Tree, so the same path-based mechanism supports single repositories, monorepo subdirectories, nested repositories, submodules, and linked worktrees without layout-specific Runtime branches. The selected Repository is frozen on the Work Item and inherited by Issues and Tasks; the current release keeps one Work Item in one Git repository.
 
+For ad hoc read-only investigation across repositories, `forge_explore_repository` is an additional entry point to the existing `Explore` Agent. It accepts a Target Repository path plus a self-contained investigation prompt, then spawns through pi-subagents RPC with `cwd` set to that Repository and without requesting worktree isolation. Multiple calls can inspect independent repositories concurrently. The normal `Agent` → `Explore` capability remains unchanged and is still appropriate when the Pi Session already runs in the Repository being inspected.
+
 ## Architecture
 
 ```mermaid
@@ -291,7 +293,7 @@ poolSize: 1
 
 ## Usage
 
-Run Pi from the repository you want Forge to manage.
+Run Pi from the Forge Control Workspace. In a single-repository project this is the repository itself; in a multi-repository setup it may be a non-Git parent directory containing `.pi`, `.forge`, and several independent repositories.
 
 ### 1. Configure the repository
 

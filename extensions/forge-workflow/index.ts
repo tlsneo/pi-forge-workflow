@@ -8,6 +8,7 @@ import type { IssueAuditAxis, IssueAuditFinding, TaskContract, TaskHandoff } fro
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
 import { AuditRemediationOrchestrator } from "./audit-remediation-orchestrator.js";
 import { registerInitTools } from "./init-tools.js";
+import { registerInteractiveTools } from "./interactive-tools.js";
 import { IssueAuditOrchestrator } from "./issue-audit-orchestrator.js";
 import { registerIssueTools } from "./issue-tools.js";
 import { PrdReviewOrchestrator } from "./prd-review-orchestrator.js";
@@ -63,6 +64,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
   const taskPreflightOrchestrator = new TaskPreflightOrchestrator(adapter);
   const auditRemediationOrchestrator = new AuditRemediationOrchestrator(adapter);
   registerInitTools(pi, adapter);
+  registerInteractiveTools(pi, adapter);
   registerPrdTools(pi, prdReviewOrchestrator);
   registerIssueTools(pi);
   registerTaskTools(pi, taskPreflightOrchestrator);

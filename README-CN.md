@@ -90,6 +90,8 @@ workspace/                 # 不要求 .git
 
 从 `workspace` 启动 Pi，运行 `forge-prd`；发现多个 Repository 时，从 `forge_prd_repositories` 返回的列表中选择 Target Repository。Forge 只让 Git 解析规范 Top-level Working Tree，因此单仓库、Monorepo 子目录、嵌套独立 Repo、Submodule 和 linked Worktree 都使用同一套路径机制，不进入不同 Runtime 分支。选择结果冻结在 Work Item，并由 Issue 和 Task 继承；当前版本保持一个 Work Item 只操作一个 Git Repository。
 
+临时跨 Repo 做只读调查时，可使用新增入口 `forge_explore_repository` 启动现有 `Explore` Agent。它接收 Target Repository 路径和一份自包含调查 Prompt，通过 pi-subagents RPC 把 `cwd` 精确设为该 Repository，并且不请求 Worktree Isolation；多个调用可以并发调查多个独立 Repo。原有的 `Agent` → `Explore` 能力保持不变；当 Pi Session 本身已经位于目标 Repository 时，仍可继续使用原入口。
+
 ## 设计架构
 
 ```mermaid
@@ -291,7 +293,7 @@ poolSize: 1
 
 ## 如何使用
 
-从需要 Forge 管理的目标仓库中启动 Pi。
+从 Forge Control Workspace 启动 Pi。单仓库项目中它就是仓库本身；多仓库场景中，它可以是保存 `.pi`、`.forge` 并包含多个独立 Repository 的非 Git 父目录。
 
 ### 1. 配置仓库
 
