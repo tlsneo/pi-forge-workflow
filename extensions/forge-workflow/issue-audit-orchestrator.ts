@@ -5,7 +5,7 @@ import { RuntimeService } from "../../src/runtime/service.js";
 import type { IssueAuditAxis, IssueAuditJob } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
 
-const AXES: IssueAuditAxis[] = ["standards", "spec_integration", "architecture_minimality"];
+const AXES: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
 
 interface Location { runtimeRoot: string; axis: IssueAuditAxis; bindingId: string }
 
@@ -15,7 +15,7 @@ const CONTRACTS: Record<IssueAuditAxis, { question: string; checks: string[]; ou
     checks: ["Repository instructions", "Changed-file scope", "Tests, typecheck, lint, and generated artifacts", "Error handling and compatibility conventions"],
     outOfScope: ["Redesigning approved behavior", "Architecture preference unless a documented standard is violated"],
   },
-  spec_integration: {
+  acceptance_integration: {
     question: "Do the committed Task Receipts and assembled Slice behavior satisfy every Issue Acceptance without integration gaps?",
     checks: ["Issue Acceptance coverage", "Happy, error, and edge behavior", "Cross-Task integration", "Task and Slice verification evidence", "No missing consumer or migration behavior"],
     outOfScope: ["Style preferences", "Features outside the frozen Issue"],
@@ -32,8 +32,9 @@ function description(bindingId: string, axis: IssueAuditAxis): string {
 }
 
 function parseDescription(value: string): { bindingId: string; axis: IssueAuditAxis } | undefined {
-  const match = /^forge-issue-audit:([^:]+):(standards|spec_integration|architecture_minimality)$/.exec(value);
-  return match?.[1] && match[2] ? { bindingId: match[1], axis: match[2] as IssueAuditAxis } : undefined;
+  const match = /^forge-issue-audit:([^:]+):(standards|acceptance_integration|spec_integration|architecture_minimality)$/.exec(value);
+  const axis = match?.[2] === "spec_integration" ? "acceptance_integration" : match?.[2];
+  return match?.[1] && axis ? { bindingId: match[1], axis: axis as IssueAuditAxis } : undefined;
 }
 
 async function resolveExactModel(ctx: ExtensionContext, input: string): Promise<unknown> {
@@ -104,7 +105,7 @@ export class IssueAuditOrchestrator {
     if (!state.auditJobs || Object.values(state.auditJobs).every((job) => ["result_submitted", "completed", "failed"].includes(job.status))) {
       state = await service.createAuditJobs({
         standards: { model: route.model, thinking: route.thinking, maxTurns: route.maxTurns, configHash: route.configHash },
-        spec_integration: { model: route.model, thinking: route.thinking, maxTurns: route.maxTurns, configHash: route.configHash },
+        acceptance_integration: { model: route.model, thinking: route.thinking, maxTurns: route.maxTurns, configHash: route.configHash },
         architecture_minimality: { model: route.model, thinking: route.thinking, maxTurns: route.maxTurns, configHash: route.configHash },
       });
     }

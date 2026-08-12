@@ -123,7 +123,26 @@ export class RuntimeStore {
   }
 
   async readState(): Promise<IssueRuntimeState> {
-    return JSON.parse(await readFile(this.statePath, "utf8")) as IssueRuntimeState;
+    const state = JSON.parse(await readFile(this.statePath, "utf8")) as IssueRuntimeState & {
+      audits?: Record<string, any>;
+      auditJobs?: Record<string, any>;
+    };
+    if (state.audits?.spec_integration && !state.audits.acceptance_integration) {
+      state.audits.acceptance_integration = { ...state.audits.spec_integration, axis: "acceptance_integration" };
+      delete state.audits.spec_integration;
+    }
+    if (state.auditJobs?.spec_integration && !state.auditJobs.acceptance_integration) {
+      state.auditJobs.acceptance_integration = { ...state.auditJobs.spec_integration, axis: "acceptance_integration" };
+      delete state.auditJobs.spec_integration;
+    }
+    for (const finding of state.auditBlockerVerifierJob?.findings ?? []) {
+      if ((finding.axis as string) === "spec_integration") finding.axis = "acceptance_integration";
+      if ((finding.finding as { axis?: string }).axis === "spec_integration") (finding.finding as { axis?: string }).axis = "acceptance_integration";
+    }
+    const decision = state.humanDecision;
+    if ((decision?.resumeAction as string | undefined) === "require_prd_amendment") decision!.resumeAction = "supersede_work_item";
+    for (const option of decision?.options ?? []) if ((option.resumeAction as string) === "require_prd_amendment") option.resumeAction = "supersede_work_item";
+    return state;
   }
 
   async readActiveModelPolicy(): Promise<RuntimeModelPolicyGeneration> {

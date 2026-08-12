@@ -41,15 +41,12 @@ function config(overrides: Partial<ForgeConfig> = {}): ForgeConfig {
         "task.complex": "complex",
         interactiveExplore: "simple",
         interactivePlan: "complex",
-        prdResearch: "medium",
-        optionCandidate: "complex",
-        optionJudge: "audit",
-        optionSynthesizer: "complex",
         prdCoverageReview: "audit",
         prdEvidenceReview: "audit",
         prdArchitectureReview: "audit",
         blockerVerifier: "verifier",
-        taskAudit: "audit",
+        taskPreflight: "audit",
+        remediationPlanner: "complex",
         issueAudit: "audit",
       },
     },
@@ -57,15 +54,6 @@ function config(overrides: Partial<ForgeConfig> = {}): ForgeConfig {
       preset: "standard",
       prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 },
       blockerVerification: { profile: "verifier", requireDifferentModel: true },
-    },
-    tournament: {
-      enabled: true,
-      candidates: 3,
-      judges: 2,
-      candidateProfile: "complex",
-      judgeProfile: "audit",
-      synthesizerProfile: "complex",
-      blindReview: true,
     },
     commands: { typecheck: "npm run typecheck", test: "npm test" },
     agents: { directory: ".pi/agents", templateVersion: 2 },
@@ -92,6 +80,8 @@ describe("ForgeConfigService", () => {
     const result = await service.apply({ config: config(), expectedPreviewHash: preview.previewHash, availableModels: models });
     expect(result.receipt.generation).toBe(1);
     expect(await readFile(join(root, ".pi", "forge.json"), "utf8")).toContain('"root": ".forge"');
+    await expect(readFile(join(root, ".pi", "agents", "forge-researcher.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(root, ".pi", "agents", "forge-designer.md"), "utf8")).toContain("Forge Remediation Planner");
     expect(await readFile(join(root, ".gitignore"), "utf8")).toContain("/.forge/");
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("<!-- pi-forge-workflow:start -->");
     const explore = await readFile(join(root, ".pi", "agents", "Explore.md"), "utf8");
@@ -119,6 +109,32 @@ describe("ForgeConfigService", () => {
       fallbackSubagent: "none",
       disableDefaultAgents: false,
     });
+  });
+
+  it("normalizes retired Tournament and Task Audit config only at the read seam", async () => {
+    const { root } = await createService();
+    await mkdir(join(root, ".pi"), { recursive: true });
+    const legacy = {
+      ...config(),
+      tournament: { enabled: true, candidates: 3, judges: 2, candidateProfile: "complex", judgeProfile: "audit", synthesizerProfile: "complex", blindReview: true },
+      models: {
+        ...config().models,
+        routing: Object.fromEntries(Object.entries(config().models.routing).filter(([role]) => role !== "taskPreflight").concat([
+          ["prdResearch", "medium"],
+          ["optionCandidate", "complex"],
+          ["optionJudge", "audit"],
+          ["optionSynthesizer", "complex"],
+          ["taskAudit", "audit"],
+        ])),
+      },
+    };
+    await writeFile(join(root, ".pi", "forge.json"), JSON.stringify(legacy));
+    const { loadForgeConfig } = await import("../src/config/resolver.js");
+    const normalized = await loadForgeConfig(root);
+    expect(normalized.models.routing.taskPreflight).toBe("audit");
+    expect(normalized.models.routing).not.toHaveProperty("taskAudit");
+    expect(normalized.models.routing).not.toHaveProperty("optionCandidate");
+    expect(normalized).not.toHaveProperty("tournament");
   });
 
   it("supports a custom artifact root", async () => {
@@ -197,6 +213,20 @@ describe("ForgeConfigService", () => {
       availableModels: models,
     });
     expect(await readFile(path, "utf8")).not.toContain("CUSTOM:");
+  });
+
+  it("upgrades the retired generated Researcher and Tournament templates without treating them as local edits", async () => {
+    const { root, service } = await createService();
+    await mkdir(join(root, ".pi", "agents"), { recursive: true });
+    await writeFile(join(root, ".pi", "agents", "forge-researcher.md"), "You are a Forge repository researcher.\n");
+    await writeFile(join(root, ".pi", "agents", "forge-designer.md"), "You are a Forge design tournament agent.\n");
+    const preview = await service.preview(config(), models);
+    expect(preview.changes.some((change) => change.path.endsWith("forge-researcher.md") && change.action === "update")).toBe(true);
+    expect(preview.changes.some((change) => change.path.endsWith("forge-designer.md") && change.action === "update")).toBe(true);
+    expect(preview.changes.some((change) => change.path.endsWith("forge-designer.md") && change.action === "conflict")).toBe(false);
+    await service.apply({ config: config(), expectedPreviewHash: preview.previewHash, availableModels: models });
+    await expect(readFile(join(root, ".pi", "agents", "forge-researcher.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(root, ".pi", "agents", "forge-designer.md"), "utf8")).toContain("Forge Remediation Planner");
   });
 
   it("fails closed on locally modified Agent templates without explicit path approval", async () => {
@@ -288,7 +318,8 @@ describe("validateForgeConfig", () => {
         profiles: { ...config().models.profiles, simple: { model: "missing/model", thinking: "low", maxTurns: 30 } },
       },
     }), models)).toThrow("unavailable");
-    expect(() => validateForgeConfig(config({ workspace: { mode: "isolated-pool", isolationBackend: "none", poolSize: 2 } }), models)).toThrow("requires an isolation backend");
+    expect(() => validateForgeConfig(config({ workspace: { mode: "isolated-pool", isolationBackend: "none", poolSize: 2 } as never }), models)).toThrow("requires shared-serial");
+    expect(() => validateForgeConfig(config({ tracker: { mode: "github", repository: "owner/repo", publishRequiresConfirmation: true } as never }), models)).toThrow("Local Issue artifacts");
     expect(() => validateForgeConfig(config({
       repositoryContext: { mode: "single-context", entryPoints: ["../CONTEXT.md"], architectureDocs: [], adrDirectories: [], supplementalInstructions: [] },
     }), models)).toThrow("inside the repository");

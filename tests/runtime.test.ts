@@ -88,6 +88,18 @@ describe("RuntimeService", () => {
     await expect(service.completeTask("T01", "different-commit")).rejects.toThrow("already completed");
   });
 
+  it("normalizes the legacy Spec/Integration Audit axis only at the Runtime read seam", async () => {
+    const { root, service } = await createRuntime();
+    const state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    state.audits = { spec_integration: { axis: "spec_integration", verdict: "passed", bindingId: "legacy-audit", findings: [], submittedAt: new Date().toISOString() } };
+    state.auditJobs = { spec_integration: { id: "legacy-job", axis: "spec_integration", status: "completed", attempt: 1, maxAttempts: 2, model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" } };
+    await writeFile(join(root, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+    const normalized = await service.store.readState();
+    expect(normalized.audits?.acceptance_integration?.axis).toBe("acceptance_integration");
+    expect(normalized.auditJobs?.acceptance_integration?.axis).toBe("acceptance_integration");
+    expect((normalized.audits as Record<string, unknown>).spec_integration).toBeUndefined();
+  });
+
   it("normalizes legacy Task version and Work Item identity only at the Runtime read seam", async () => {
     const { root, service } = await createRuntime();
     const dag = JSON.parse(await readFile(join(root, "dag.json"), "utf8"));
@@ -213,11 +225,11 @@ describe("RuntimeService", () => {
       reason: "Both options change the existing architecture decision.",
       evidence: ["PRD D-01", "src/config.ts#AppConfig"],
       options: [
-        { id: "amend", label: "Amend PRD", description: "Choose a new seam through planning", consequences: ["Current Runtime stays blocked"], resumeAction: "require_prd_amendment" },
+        { id: "amend", label: "Amend PRD", description: "Choose a new seam through planning", consequences: ["Current Runtime stays blocked"], resumeAction: "supersede_work_item" },
         { id: "abort", label: "Abort", description: "Stop this Issue", consequences: ["No repair code is written"], resumeAction: "abort_issue" },
       ],
       recommendedOptionId: "amend",
-      resumeAction: "require_prd_amendment",
+      resumeAction: "supersede_work_item",
     });
     expect(state.issueStatus).toBe("needs_user");
     expect(state.humanDecision?.status).toBe("open");
@@ -225,7 +237,7 @@ describe("RuntimeService", () => {
     state = await service.answerHumanDecision({ requestId: state.humanDecision!.id, requestHash: state.humanDecision!.requestHash, selectedOptionId: "amend", decision: "Amend the PRD", rationale: "The repair requires a different approved seam", evidence: ["User approved amendment"], answeredBy: "user", authorizationEvidence: "Exact user statement" });
     expect(state.humanDecision?.status).toBe("answered");
     const resumed = await service.resumeHumanDecision(state.humanDecision!.id);
-    expect(resumed.action).toBe("require_prd_amendment");
+    expect(resumed.action).toBe("supersede_work_item");
     expect(resumed.state.issueStatus).toBe("needs_user");
   });
 

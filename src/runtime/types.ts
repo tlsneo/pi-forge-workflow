@@ -86,7 +86,7 @@ export interface RuntimeManifest {
   issueHash: string;
   dagHash: string;
   workspaceRoot: string;
-  workspaceMode: "shared-serial" | "isolated-pool";
+  workspaceMode: "shared-serial";
   issueModelProfile?: string;
   auditModelProfile?: string;
   modelPolicy: ModelPolicy;
@@ -174,7 +174,7 @@ export interface SliceGateState {
   completedAt?: string;
 }
 
-export type IssueAuditAxis = "standards" | "spec_integration" | "architecture_minimality";
+export type IssueAuditAxis = "standards" | "acceptance_integration" | "architecture_minimality";
 export type IssueAuditVerdict = "passed" | "blocked";
 export type IssueAuditJobStatus = "pending" | "starting" | "running" | "result_submitted" | "completed" | "interrupted" | "retry_ready" | "failed";
 
@@ -298,7 +298,7 @@ export type HumanDecisionKind =
   | "repository_rule_conflict"
   | "unsafe_repository_operation";
 
-export type HumanDecisionResumeAction = "rerun_verifier" | "resume_planner" | "require_prd_amendment" | "abort_issue";
+export type HumanDecisionResumeAction = "rerun_verifier" | "resume_planner" | "supersede_work_item" | "abort_issue";
 
 export interface HumanDecisionOption {
   id: string;

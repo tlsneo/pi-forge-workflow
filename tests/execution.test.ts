@@ -85,11 +85,11 @@ describe("TaskExecutionService", () => {
 
     await runtime.createAuditJobs({
       standards: { model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
-      spec_integration: { model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
+      acceptance_integration: { model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
       architecture_minimality: { model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
     });
     let finalState = await runtime.status();
-    for (const axis of ["standards", "spec_integration", "architecture_minimality"] as IssueAuditAxis[]) {
+    for (const axis of ["standards", "acceptance_integration", "architecture_minimality"] as IssueAuditAxis[]) {
       const job = finalState.auditJobs![axis];
       const auditBinding = RuntimeService.createAuditBinding({ axis, attempt: 1, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: finalState.generation });
       await runtime.claimAuditJob(axis, auditBinding);

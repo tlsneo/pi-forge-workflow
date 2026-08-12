@@ -166,6 +166,41 @@ export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrches
   });
 
   pi.registerTool({
+    name: "forge_prd_supersede",
+    label: "Forge PRD Supersede",
+    description: "Create a new discovery Work Item that immutably supersedes one frozen Work Item",
+    parameters: Type.Object({
+      workItemRoot: WorkItemRoot,
+      title: Type.Optional(Type.String()),
+      reason: Type.String(),
+      authorizedBy: Type.String(),
+      authorizationEvidence: Type.String(),
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      const predecessorRoot = normalizeRoot(ctx.cwd, params.workItemRoot);
+      const config = await loadForgeConfig(ctx.cwd);
+      const title = params.title?.trim() || (await new WorkItemService(predecessorRoot).store.readManifest()).title;
+      const successorId = `${slugify(title)}-${randomUUID().slice(0, 8)}`;
+      const successorRoot = join(ctx.cwd, config.artifacts.root, "work-items", successorId);
+      const created = await new WorkItemService(predecessorRoot).createSuccessor({
+        successorRoot,
+        successorWorkItemId: successorId,
+        title,
+        repositoryRevision: await repositoryRevision(pi, ctx.cwd, signal),
+        reason: params.reason,
+        authorizedBy: params.authorizedBy,
+        authorizationEvidence: params.authorizationEvidence,
+      });
+      await orchestrator.index(successorRoot);
+      return text(`Created successor Work Item ${successorId}. The predecessor remains frozen; continue discovery in ${successorRoot}.`, {
+        predecessorRoot,
+        workItemRoot: successorRoot,
+        ...created,
+      });
+    },
+  });
+
+  pi.registerTool({
     name: "forge_prd_status",
     label: "Forge PRD Status",
     description: "Read and reconcile a Forge PRD Work Item",

@@ -40,7 +40,7 @@ export class IssuesService {
     const contentHash = stableHash({ source, issues });
     if (current.issues) {
       if (current.issues.contentHash !== contentHash) {
-        throw new Error("Issues already exist for this frozen PRD; a different proposal requires an explicit Issues Amendment");
+        throw new Error("Issues already exist for this frozen PRD; a different proposal requires a successor Work Item");
       }
       const manifest = await this.workItem.store.readIssuesManifest();
       if (!manifest) throw new Error("Issues state exists but manifest.json is missing");

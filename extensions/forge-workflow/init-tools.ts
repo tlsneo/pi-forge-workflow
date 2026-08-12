@@ -21,30 +21,19 @@ const ConfigSchema = Type.Object({
   generation: Type.Integer(),
   artifacts: Type.Object({ root: Type.String(), gitPolicy: Type.Union([Type.Literal("ignore"), Type.Literal("track")]) }),
   tracker: Type.Object({
-    mode: Type.Union([Type.Literal("local"), Type.Literal("github"), Type.Literal("gitlab")]),
-    repository: Type.Optional(Type.String()),
-    project: Type.Optional(Type.String()),
+    mode: Type.Literal("local"),
     publishRequiresConfirmation: Type.Literal(true),
   }),
   workspace: Type.Object({
-    mode: Type.Union([Type.Literal("shared-serial"), Type.Literal("isolated-pool")]),
-    isolationBackend: Type.Union([Type.Literal("none"), Type.Literal("worktree"), Type.Literal("clone"), Type.Literal("custom")]),
-    poolSize: Type.Integer(),
+    mode: Type.Literal("shared-serial"),
+    isolationBackend: Type.Literal("none"),
+    poolSize: Type.Literal(1),
   }),
   models: Type.Object({ profiles: Type.Record(Type.String(), ProfileSchema), routing: Type.Record(Type.String(), Type.String()) }),
   review: Type.Object({
     preset: Type.Union([Type.Literal("fast"), Type.Literal("standard"), Type.Literal("high-assurance")]),
     prd: Type.Object({ coverageReviewers: Type.Integer(), evidenceReviewers: Type.Integer(), architectureReviewers: Type.Integer() }),
     blockerVerification: Type.Object({ profile: Type.String(), requireDifferentModel: Type.Boolean() }),
-  }),
-  tournament: Type.Object({
-    enabled: Type.Boolean(),
-    candidates: Type.Integer(),
-    judges: Type.Integer(),
-    candidateProfile: Type.String(),
-    judgeProfile: Type.String(),
-    synthesizerProfile: Type.String(),
-    blindReview: Type.Literal(true),
   }),
   commands: Type.Object({
     typecheck: Type.Optional(Type.String()), test: Type.Optional(Type.String()), lint: Type.Optional(Type.String()), build: Type.Optional(Type.String()),
@@ -115,19 +104,6 @@ function profile(model: AvailableModel, thinking: ThinkingLevel, maxTurns: numbe
   return { model: model.id, thinking: supported, maxTurns };
 }
 
-function trackerFromRemotes(remotes: Array<{ name: string; url: string }>): TrackerMode {
-  if (remotes.some((remote) => remote.url.includes("github.com"))) return "github";
-  if (remotes.some((remote) => remote.url.includes("gitlab"))) return "gitlab";
-  return "local";
-}
-
-function remoteProject(remotes: Array<{ name: string; url: string }>, host: "github" | "gitlab"): string | undefined {
-  const remote = remotes.find((candidate) => candidate.url.includes(host));
-  if (!remote) return undefined;
-  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote.url);
-  return match?.[1];
-}
-
 async function scanRepository(pi: ExtensionAPI, ctx: ExtensionContext, adapter: PiSubagentsAdapter, inputRoot?: string): Promise<RepositoryScan> {
   const requested = resolve(ctx.cwd, inputRoot ?? ".");
   const gitRootResult = await execText(pi, "git", ["rev-parse", "--show-toplevel"], requested);
@@ -155,7 +131,7 @@ async function scanRepository(pi: ExtensionAPI, ctx: ExtensionContext, adapter: 
   const commands: ForgeConfig["commands"] = {};
   for (const name of ["typecheck", "test", "lint", "build"] as const) if (scripts[name]) commands[name] = `${commandPrefix} ${name}`;
 
-  const inferredTracker = trackerFromRemotes(remotes);
+  const inferredTracker: TrackerMode = "local";
   const ghVersion = await execText(pi, "gh", ["--version"], repositoryRoot);
   const ghAuth = ghVersion.code === 0 ? await execText(pi, "gh", ["auth", "status"], repositoryRoot) : { code: 127, stdout: "" };
   const glabVersion = await execText(pi, "glab", ["--version"], repositoryRoot);
@@ -168,19 +144,13 @@ async function scanRepository(pi: ExtensionAPI, ctx: ExtensionContext, adapter: 
   const mediumModel = chooseModel(models, ["gpt-5.6-luna", "luna"], simpleModel);
   const complexModel = chooseModel(models, ["gpt-5.6-sol", "sol"], mediumModel);
   const verifierModel = chooseModel(models.filter((model) => model.id !== complexModel.id), ["deepseek-v4-pro", "pro"], mediumModel);
-  const trackerProject = inferredTracker === "github" ? remoteProject(remotes, "github") : inferredTracker === "gitlab" ? remoteProject(remotes, "gitlab") : undefined;
   const instructionSelection = await selectPiInstructionFile(repositoryRoot);
   const discoveredRepositoryContext = await discoverRepositoryContext(repositoryRoot);
   const recommendedConfig: ForgeConfig = {
     schemaVersion: 1,
     generation: 1,
     artifacts: { root: ".forge", gitPolicy: "ignore" },
-    tracker: {
-      mode: inferredTracker,
-      ...(inferredTracker === "github" && trackerProject ? { repository: trackerProject } : {}),
-      ...(inferredTracker === "gitlab" && trackerProject ? { project: trackerProject } : {}),
-      publishRequiresConfirmation: true,
-    },
+    tracker: { mode: "local", publishRequiresConfirmation: true },
     workspace: { mode: "shared-serial", isolationBackend: "none", poolSize: 1 },
     models: {
       profiles: {
@@ -193,18 +163,14 @@ async function scanRepository(pi: ExtensionAPI, ctx: ExtensionContext, adapter: 
       routing: {
         "task.simple": "simple", "task.medium": "medium", "task.complex": "complex",
         interactiveExplore: "simple", interactivePlan: "complex",
-        prdResearch: "medium", optionCandidate: "complex", optionJudge: "audit", optionSynthesizer: "complex",
         prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit",
-        blockerVerifier: "verifier", taskPreflight: "audit", remediationPlanner: "complex", taskAudit: "audit", issueAudit: "audit",
+        blockerVerifier: "verifier", taskPreflight: "audit", remediationPlanner: "complex", issueAudit: "audit",
       },
     },
     review: {
       preset: "standard",
       prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 },
       blockerVerification: { profile: "verifier", requireDifferentModel: true },
-    },
-    tournament: {
-      enabled: true, candidates: 3, judges: 2, candidateProfile: "complex", judgeProfile: "audit", synthesizerProfile: "complex", blindReview: true,
     },
     commands,
     agents: { directory: await pathExists(join(repositoryRoot, ".agents", "agents")) ? ".agents/agents" : ".pi/agents", templateVersion: 2 },

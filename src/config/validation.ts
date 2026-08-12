@@ -65,22 +65,9 @@ export function validateForgeConfig(config: ForgeConfig, availableModels?: Avail
   if (config.tracker.publishRequiresConfirmation !== true) {
     throw new Error("External tracker publication must require confirmation");
   }
-  if (config.tracker.mode === "github" && !config.tracker.repository?.trim()) {
-    throw new Error("GitHub tracker requires repository");
-  }
-  if (config.tracker.mode === "gitlab" && !config.tracker.project?.trim()) {
-    throw new Error("GitLab tracker requires project");
-  }
-
-  if (config.workspace.mode === "shared-serial") {
-    if (config.workspace.isolationBackend !== "none" || config.workspace.poolSize !== 1) {
-      throw new Error("shared-serial requires isolationBackend none and poolSize 1");
-    }
-  } else {
-    if (config.workspace.isolationBackend === "none") throw new Error("isolated-pool requires an isolation backend");
-    if (!Number.isInteger(config.workspace.poolSize) || config.workspace.poolSize < 2) {
-      throw new Error("isolated-pool requires poolSize of at least 2");
-    }
+  if (config.tracker.mode !== "local") throw new Error("The current Forge release supports only Local Issue artifacts");
+  if (config.workspace.mode !== "shared-serial" || config.workspace.isolationBackend !== "none" || config.workspace.poolSize !== 1) {
+    throw new Error("The current Forge release requires shared-serial with isolationBackend none and poolSize 1");
   }
 
   const profileEntries = Object.entries(config.models.profiles);
@@ -106,23 +93,6 @@ export function validateForgeConfig(config: ForgeConfig, availableModels?: Avail
     });
     if (conflictingRoles.length > 0) throw new Error(`Blocker verifier model must differ from PRD Reviewer models: ${conflictingRoles.join(", ")}`);
   }
-
-  if (config.tournament.enabled) {
-    if (!Number.isInteger(config.tournament.candidates) || config.tournament.candidates < 3) {
-      throw new Error("Enabled tournament requires at least 3 candidates");
-    }
-    if (!Number.isInteger(config.tournament.judges) || config.tournament.judges < 2) {
-      throw new Error("Enabled tournament requires at least 2 judges");
-    }
-  }
-  for (const profileName of [
-    config.tournament.candidateProfile,
-    config.tournament.judgeProfile,
-    config.tournament.synthesizerProfile,
-  ]) {
-    if (!config.models.profiles[profileName]) throw new Error(`Tournament references unknown profile ${profileName}`);
-  }
-  if (config.tournament.blindReview !== true) throw new Error("Option Tournament review must remain blind");
 
   for (const [name, command] of Object.entries(config.commands)) {
     if (typeof command !== "string" || !command.trim()) throw new Error(`${name} command must not be empty`);

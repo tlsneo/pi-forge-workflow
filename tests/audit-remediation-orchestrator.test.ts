@@ -23,9 +23,8 @@ function config(): ForgeConfig {
   return {
     schemaVersion: 1, generation: 1, artifacts: { root: ".forge", gitPolicy: "ignore" }, tracker: { mode: "local", publishRequiresConfirmation: true },
     workspace: { mode: "shared-serial", isolationBackend: "none", poolSize: 1 },
-    models: { profiles: { simple: audit, medium: audit, complex: audit, audit, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } }, routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", taskPreflight: "audit", remediationPlanner: "complex", blockerVerifier: "verifier", taskAudit: "audit", issueAudit: "audit" } },
+    models: { profiles: { simple: audit, medium: audit, complex: audit, audit, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } }, routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", taskPreflight: "audit", remediationPlanner: "complex", blockerVerifier: "verifier", issueAudit: "audit" } },
     review: { preset: "standard", prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 }, blockerVerification: { profile: "verifier", requireDifferentModel: true } },
-    tournament: { enabled: true, candidates: 3, judges: 2, candidateProfile: "complex", judgeProfile: "audit", synthesizerProfile: "complex", blindReview: true },
     commands: {}, agents: { directory: ".pi/agents", templateVersion: 1 },
   };
 }

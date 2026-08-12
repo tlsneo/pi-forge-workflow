@@ -44,7 +44,7 @@ it("adds remediation as a new immutable DAG generation", async () => {
     state.auditGeneration = 1;
     state.auditJobs = {
       standards: { id: "old-standards", axis: "standards", status: "result_submitted", attempt: 1, maxAttempts: 2, model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
-      spec_integration: { id: "old-spec", axis: "spec_integration", status: "result_submitted", attempt: 1, maxAttempts: 2, model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
+      acceptance_integration: { id: "old-spec", axis: "acceptance_integration", status: "result_submitted", attempt: 1, maxAttempts: 2, model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
       architecture_minimality: { id: "old-arch", axis: "architecture_minimality", status: "result_submitted", attempt: 1, maxAttempts: 2, model: "test/audit", thinking: "high", maxTurns: 20, configHash: "config" },
     };
     state.remediationPlan = {

@@ -130,7 +130,7 @@ describe("IssuesService", () => {
     expect(second.manifest.contentHash).toBe(first.manifest.contentHash);
     const changed = oneIssue();
     changed[0] = { ...changed[0]!, title: "A different Issue title." };
-    await expect(issues.submit(changed)).rejects.toThrow("explicit Issues Amendment");
+    await expect(issues.submit(changed)).rejects.toThrow("successor Work Item");
   });
 
   it("rejects missing Acceptance coverage, unknown frozen references, and dependency cycles", async () => {

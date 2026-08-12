@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ForgeConfig, ForgeModelProfile } from "./types.js";
 
-const STATIC_TEMPLATE_FILES = ["task-worker.md", "forge-researcher.md", "forge-designer.md", "forge-reviewer.md"] as const;
+const STATIC_TEMPLATE_FILES = ["task-worker.md", "forge-designer.md", "forge-reviewer.md"] as const;
 
 export interface DesiredAgentTemplate {
   file: string;

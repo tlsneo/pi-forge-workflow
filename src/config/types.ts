@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "../runtime/types.js";
 
-export type WorkspaceMode = "shared-serial" | "isolated-pool";
-export type TrackerMode = "local" | "github" | "gitlab";
+export type WorkspaceMode = "shared-serial";
+export type TrackerMode = "local";
 export type AuditPreset = "fast" | "standard" | "high-assurance";
 export type ForgeInstructionFile = "AGENTS.override.md" | "AGENTS.md" | "AGENTS.MD" | "CLAUDE.md" | "CLAUDE.MD";
 
@@ -28,14 +28,12 @@ export interface ForgeConfig {
   };
   tracker: {
     mode: TrackerMode;
-    repository?: string;
-    project?: string;
     publishRequiresConfirmation: true;
   };
   workspace: {
     mode: WorkspaceMode;
-    isolationBackend: "none" | "worktree" | "clone" | "custom";
-    poolSize: number;
+    isolationBackend: "none";
+    poolSize: 1;
   };
   models: {
     profiles: Record<string, ForgeModelProfile>;
@@ -52,15 +50,6 @@ export interface ForgeConfig {
       profile: string;
       requireDifferentModel: boolean;
     };
-  };
-  tournament: {
-    enabled: boolean;
-    candidates: number;
-    judges: number;
-    candidateProfile: string;
-    judgeProfile: string;
-    synthesizerProfile: string;
-    blindReview: true;
   };
   commands: {
     typecheck?: string;

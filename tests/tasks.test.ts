@@ -37,10 +37,9 @@ function config(): ForgeConfig {
     workspace: { mode: "shared-serial", isolationBackend: "none", poolSize: 1 },
     models: {
       profiles: { simple: { model: "test/simple", thinking: "low", maxTurns: 12 }, medium, complex: medium, audit: { model: "test/audit", thinking: "high", maxTurns: 20 }, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } },
-      routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", prdResearch: "medium", optionCandidate: "complex", optionJudge: "audit", optionSynthesizer: "complex", prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit", blockerVerifier: "verifier", taskAudit: "audit", issueAudit: "audit" },
+      routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit", blockerVerifier: "verifier", taskPreflight: "audit", remediationPlanner: "complex", issueAudit: "audit" },
     },
     review: { preset: "standard", prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 }, blockerVerification: { profile: "verifier", requireDifferentModel: true } },
-    tournament: { enabled: true, candidates: 3, judges: 2, candidateProfile: "complex", judgeProfile: "audit", synthesizerProfile: "complex", blindReview: true },
     commands: { test: "npm test", typecheck: "npm run typecheck" },
     agents: { directory: ".pi/agents", templateVersion: 1 },
   };

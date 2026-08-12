@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { stableHash } from "../runtime/hash.js";
 import { atomicWriteJson, atomicWriteText } from "../runtime/store.js";
@@ -85,13 +85,19 @@ export class ForgeConfigService {
     const currentTemplates = currentConfig
       ? new Map((await desiredAgentTemplates(this.packageRoot, currentConfig)).map((template) => [template.file, template.content]))
       : new Map<string, string>();
+    const retiredResearcherPath = join(this.repositoryRoot, config.agents.directory, "forge-researcher.md");
+    const retiredResearcher = await readOptional(retiredResearcherPath);
+    if (retiredResearcher?.includes("You are a Forge repository researcher.")) {
+      changes.push(changeFor(retiredResearcherPath, retiredResearcher, "", false, "Remove the retired generated Forge Researcher template"));
+    }
     for (const template of await desiredAgentTemplates(this.packageRoot, config)) {
       const targetPath = join(this.repositoryRoot, config.agents.directory, template.file);
       const current = await readOptional(targetPath);
       const expectedCurrent = currentTemplates.get(template.file);
       const differs = current !== undefined && stableHash(current) !== stableHash(template.content);
-      const locallyModified = differs && (expectedCurrent === undefined || stableHash(current) !== stableHash(expectedCurrent));
-      changes.push(changeFor(targetPath, current, template.content, locallyModified));
+      const retiredGeneratedDesigner = template.file === "forge-designer.md" && current?.includes("You are a Forge design tournament agent.");
+      const locallyModified = differs && !retiredGeneratedDesigner && (expectedCurrent === undefined || stableHash(current) !== stableHash(expectedCurrent));
+      changes.push(changeFor(targetPath, current, template.content, locallyModified, retiredGeneratedDesigner ? "Replace the retired generated Tournament template with the Remediation Planner template" : undefined));
     }
 
     const instructionPlans = await planManagedInstructions(this.repositoryRoot, currentConfig, config);
@@ -119,8 +125,6 @@ export class ForgeConfigService {
     }
 
     const warnings: string[] = [];
-    if (config.tracker.mode !== "local") warnings.push("External issue publication remains confirmation-gated and uses the user's existing CLI authentication.");
-    if (config.workspace.mode === "isolated-pool") warnings.push("Isolated workspace setup and cleanup must be verified for this repository before execution.");
     if (config.instructions?.file === "AGENTS.override.md") warnings.push("AGENTS.override.md shadows AGENTS.md and CLAUDE.md in this directory; writing the Forge block there requires explicit user confirmation.");
     if (config.repositoryContext) {
       const contextPaths = [...new Set([
@@ -175,6 +179,12 @@ export class ForgeConfigService {
         await atomicWriteText(targetPath, template.content);
         changedFiles.push(targetPath);
       }
+    }
+    const retiredResearcherPath = join(this.repositoryRoot, preview.config.agents.directory, "forge-researcher.md");
+    const retiredResearcher = await readOptional(retiredResearcherPath);
+    if (retiredResearcher?.includes("You are a Forge repository researcher.")) {
+      await rm(retiredResearcherPath);
+      changedFiles.push(retiredResearcherPath);
     }
 
     const instructionPlans = await planManagedInstructions(this.repositoryRoot, currentConfig, preview.config);

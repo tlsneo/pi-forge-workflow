@@ -297,12 +297,24 @@ export interface FrozenPrdReceipt {
   frozenAt: string;
 }
 
+export interface WorkItemSupersession {
+  predecessorWorkItemId: string;
+  predecessorRoot: string;
+  predecessorPrdGeneration: number;
+  predecessorPrdHash: string;
+  reason: string;
+  authorizedBy: string;
+  authorizationEvidence: string;
+  createdAt: string;
+}
+
 export interface WorkItemManifest {
   schemaVersion: 1;
   workItemId: string;
   title: string;
   repositoryRoot: string;
   repositoryRevision: string;
+  supersedes?: WorkItemSupersession;
   createdAt: string;
 }
 

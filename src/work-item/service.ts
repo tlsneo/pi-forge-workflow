@@ -138,6 +138,47 @@ export class WorkItemService {
     return state;
   }
 
+  async createSuccessor(input: {
+    successorRoot: string;
+    successorWorkItemId: string;
+    title?: string;
+    repositoryRevision: string;
+    reason: string;
+    authorizedBy: string;
+    authorizationEvidence: string;
+  }): Promise<{ root: string; state: WorkItemState; manifest: WorkItemManifest }> {
+    const current = await this.store.readState();
+    const manifest = await this.store.readManifest();
+    if (current.status !== "frozen" || !current.currentPrd || !current.frozenReceipt) throw new Error("Only a frozen Work Item can be superseded");
+    for (const [label, value] of Object.entries({
+      successorWorkItemId: input.successorWorkItemId,
+      repositoryRevision: input.repositoryRevision,
+      reason: input.reason,
+      authorizedBy: input.authorizedBy,
+      authorizationEvidence: input.authorizationEvidence,
+    })) if (!value.trim()) throw new Error(`Successor ${label} must not be empty`);
+    const successor = new WorkItemService(input.successorRoot);
+    if (await successor.store.exists()) throw new Error(`Successor Work Item already exists: ${input.successorRoot}`);
+    const createdAt = new Date().toISOString();
+    const state = await successor.initialize({
+      workItemId: input.successorWorkItemId,
+      title: input.title?.trim() || manifest.title,
+      repositoryRoot: manifest.repositoryRoot,
+      repositoryRevision: input.repositoryRevision,
+      supersedes: {
+        predecessorWorkItemId: manifest.workItemId,
+        predecessorRoot: this.store.root,
+        predecessorPrdGeneration: current.currentPrd.generation,
+        predecessorPrdHash: current.currentPrd.contentHash,
+        reason: input.reason,
+        authorizedBy: input.authorizedBy,
+        authorizationEvidence: input.authorizationEvidence,
+        createdAt,
+      },
+    });
+    return { root: input.successorRoot, state, manifest: await successor.store.readManifest() };
+  }
+
   async open(): Promise<{ state: WorkItemState; frontier: string[]; repaired: boolean }> {
     const doctor = await this.store.doctor();
     return {

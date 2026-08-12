@@ -1,25 +1,20 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const expected = [
-  "forge-init",
-  "forge-prd",
-  "forge-map",
-  "forge-options",
-  "forge-design",
-  "forge-spec",
-  "forge-issues",
-  "forge-tasks",
-  "forge-run",
-  "forge-check",
-  "forge-audit",
-];
+const expected = ["forge-init", "forge-prd", "forge-issues", "forge-tasks", "forge-run"];
 
 describe("Forge Skills package", () => {
-  it("contains the current Forge Skill set with unique frontmatter names", async () => {
+  it("exposes only the five executable public workflow Skills", async () => {
+    const skillRoot = join(process.cwd(), "skills");
+    const directories = (await readdir(skillRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    expect(directories).toEqual(expected.slice().sort());
+
     const names = await Promise.all(expected.map(async (directory) => {
-      const content = await readFile(join(process.cwd(), "skills", directory, "SKILL.md"), "utf8");
+      const content = await readFile(join(skillRoot, directory, "SKILL.md"), "utf8");
       expect(content.startsWith("---\n")).toBe(true);
       const name = /^name: (.+)$/m.exec(content)?.[1];
       const description = /^description: (.+)$/m.exec(content)?.[1];

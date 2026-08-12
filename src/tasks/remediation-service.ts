@@ -65,7 +65,7 @@ export class RemediationService {
     if (uniqueSlices.length === 0) throw new Error("Remediation must rerun at least one affected Slice Gate");
     for (const sliceId of uniqueSlices) if (!state.sliceGates?.[sliceId]) throw new Error(`Unknown affected Slice Gate: ${sliceId}`);
     for (const contract of contracts) if (!uniqueSlices.includes(contract.sliceId)) throw new Error(`${contract.id} Slice ${contract.sliceId} must be included in rerunSliceIds`);
-    const routeBase = resolveForgeProfile(config, config.models.routing.taskPreflight ? "taskPreflight" : "taskAudit");
+    const routeBase = resolveForgeProfile(config, "taskPreflight");
     const route: TaskPreflightRoute = { profile: routeBase.profile, model: routeBase.model, thinking: routeBase.thinking, maxTurns: routeBase.maxTurns, configGeneration: routeBase.configGeneration, configHash: routeBase.configHash };
     const proposalHash = stableHash({ kind: "remediation", source: plan.source, sourceFindingHash: plan.findingHash, sourcePrdHash: prdGeneration.contentHash, sourceIssueHash: issue.artifactHash, dagGeneration: dag.generation, drafts, rerunSliceIds: uniqueSlices });
     const preflight = this.preflightService(state.issueId);

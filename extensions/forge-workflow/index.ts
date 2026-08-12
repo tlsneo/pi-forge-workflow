@@ -347,11 +347,11 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "forge_run_audit_submit",
     label: "Forge Run Audit Submit",
-    description: "Submit one Binding-bound final Issue Audit result for Standards, Spec/Integration, or Architecture/Minimality",
+    description: "Submit one Binding-bound final Issue Audit result for Standards, Acceptance/Integration, or Architecture/Minimality",
     parameters: Type.Object({
       runtimeRoot: RuntimeRoot,
       bindingId: Type.String(),
-      axis: Type.Union([Type.Literal("standards"), Type.Literal("spec_integration"), Type.Literal("architecture_minimality")]),
+      axis: Type.Union([Type.Literal("standards"), Type.Literal("acceptance_integration"), Type.Literal("architecture_minimality")]),
       verdict: Type.Union([Type.Literal("passed"), Type.Literal("blocked")]),
       findings: Type.Array(Type.Object({
         id: Type.String(),
@@ -471,9 +471,9 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       source: Type.Union([Type.Literal("blocker_verifier"), Type.Literal("remediation_planner"), Type.Literal("remediation_preflight"), Type.Literal("coordinator")]),
       sourceBindingId: Type.Optional(Type.String()),
       question: Type.String(), reason: Type.String(), evidence: Type.Array(Type.String()),
-      options: Type.Array(Type.Object({ id: Type.String(), label: Type.String(), description: Type.String(), consequences: Type.Array(Type.String()), resumeAction: Type.Union([Type.Literal("rerun_verifier"), Type.Literal("resume_planner"), Type.Literal("require_prd_amendment"), Type.Literal("abort_issue")]) })),
+      options: Type.Array(Type.Object({ id: Type.String(), label: Type.String(), description: Type.String(), consequences: Type.Array(Type.String()), resumeAction: Type.Union([Type.Literal("rerun_verifier"), Type.Literal("resume_planner"), Type.Literal("supersede_work_item"), Type.Literal("abort_issue")]) })),
       recommendedOptionId: Type.Optional(Type.String()),
-      resumeAction: Type.Union([Type.Literal("rerun_verifier"), Type.Literal("resume_planner"), Type.Literal("require_prd_amendment"), Type.Literal("abort_issue")]),
+      resumeAction: Type.Union([Type.Literal("rerun_verifier"), Type.Literal("resume_planner"), Type.Literal("supersede_work_item"), Type.Literal("abort_issue")]),
     }),
     async execute(_id, params, _signal, _update, ctx) {
       const runtimeRoot = normalizeRoot(ctx.cwd, params.runtimeRoot);

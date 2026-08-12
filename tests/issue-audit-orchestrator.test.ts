@@ -23,9 +23,8 @@ function config(): ForgeConfig {
   return {
     schemaVersion: 1, generation: 1, artifacts: { root: ".forge", gitPolicy: "ignore" }, tracker: { mode: "local", publishRequiresConfirmation: true },
     workspace: { mode: "shared-serial", isolationBackend: "none", poolSize: 1 },
-    models: { profiles: { simple: audit, medium: audit, complex: audit, audit, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } }, routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", prdResearch: "medium", optionCandidate: "complex", optionJudge: "audit", optionSynthesizer: "complex", prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit", blockerVerifier: "verifier", taskAudit: "audit", issueAudit: "audit" } },
+    models: { profiles: { simple: audit, medium: audit, complex: audit, audit, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } }, routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit", blockerVerifier: "verifier", issueAudit: "audit" } },
     review: { preset: "standard", prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 }, blockerVerification: { profile: "verifier", requireDifferentModel: true } },
-    tournament: { enabled: true, candidates: 3, judges: 2, candidateProfile: "complex", judgeProfile: "audit", synthesizerProfile: "complex", blindReview: true },
     commands: {}, agents: { directory: ".pi/agents", templateVersion: 1 },
   };
 }
@@ -56,7 +55,7 @@ describe("IssueAuditOrchestrator", () => {
     expect(new Set(spawns.map((spawn) => spawn.options.description)).size).toBe(3);
 
     let state = await runtime.status();
-    for (const axis of ["standards", "spec_integration", "architecture_minimality"] as IssueAuditAxis[]) {
+    for (const axis of ["standards", "acceptance_integration", "architecture_minimality"] as IssueAuditAxis[]) {
       state = await runtime.submitAudit(state.auditJobs![axis].binding!.id, axis, "passed", []);
     }
     expect(state.issueStatus).toBe("completed");

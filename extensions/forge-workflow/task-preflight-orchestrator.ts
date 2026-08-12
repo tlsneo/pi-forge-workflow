@@ -43,8 +43,7 @@ async function resolveExactModel(ctx: ExtensionContext, input: string): Promise<
 }
 
 function resolveRoute(config: Awaited<ReturnType<typeof loadForgeConfig>>): TaskPreflightRoute {
-  const role = config.models.routing.taskPreflight ? "taskPreflight" : "taskAudit";
-  const route = resolveForgeProfile(config, role);
+  const route = resolveForgeProfile(config, "taskPreflight");
   return {
     profile: route.profile,
     model: route.model,

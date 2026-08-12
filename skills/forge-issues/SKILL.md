@@ -49,13 +49,13 @@ issues/
 
 `issue.json` is the Issue fact source. `ISSUE.md` and `issues/README.md` are deterministic human views. `manifest.json` is the only entry point for `forge-tasks`.
 
-Submitting the same proposal is idempotent. A different proposal for the same frozen PRD must fail closed until an explicit Issues Amendment protocol is used.
+Submitting the same proposal is idempotent. A different proposal for the same frozen PRD fails closed. If the frozen Delivery Plan must change, create a successor Work Item through `forge-prd`; do not amend the predecessor Issues in place.
 
 Completion criterion: `forge_issues_status` returns a Manifest whose traceability covers every PRD Acceptance and whose Artifact Hashes match the generated files.
 
 ## Guardrails
 
-- Local Issue artifacts always exist; external GitHub/GitLab publication is a later confirmation-gated adapter step.
+- Local Issue artifacts are authoritative in the current release; external tracker publication is outside this workflow.
 - Do not duplicate the complete PRD inside every Issue.
 - Do not invent new Acceptance, behavior, Evidence, Decisions, Test Seams, non-goals, verification text, data-flow direction, Module ownership, Fallback semantics, or file boundaries.
 - Do not proceed to Tasks from the PRD directly; `forge-tasks` consumes `issues/manifest.json` and one Issue Artifact.

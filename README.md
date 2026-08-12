@@ -2,7 +2,7 @@
 
 [中文说明](README-CN.md)
 
-A deterministic, evidence-backed engineering workflow for [Pi](https://pi.dev) that turns a feature discussion into reviewed planning artifacts, small executable Tasks, verified Git commits, final audits, and bounded remediation.
+A deterministic, evidence-backed engineering workflow for [Pi](https://pi.dev) that turns a feature discussion into a reviewed PRD, exact Local Issues, small executable Tasks, verified Git commits, final audits, and bounded remediation.
 
 > **Status:** experimental MVP. The implemented execution path is intentionally `shared-serial` and fail-closed. See [Current limitations](#current-limitations) before adopting it.
 
@@ -82,7 +82,7 @@ flowchart TD
     P --> PR[Structured PRD generation]
     PR --> RV{Coverage + Evidence + Architecture reviews}
     RV -->|passed| AP[Explicit user approval]
-    RV -->|confirmed blocker| PA[Immutable PRD amendment]
+    RV -->|confirmed blocker before freeze| PA[New immutable PRD generation]
     PA --> RV
     AP --> FPRD[Frozen PRD + receipt]
 
@@ -221,7 +221,7 @@ Commit subjects are exactly the frozen Task titles. Forge metadata remains in Re
 After Slice Gates pass, Forge runs three independent final Issue audits:
 
 - **Standards**;
-- **Spec / Integration**;
+- **Acceptance / Integration**;
 - **Architecture / Minimality**.
 
 A Blocker enters a controlled loop:
@@ -395,11 +395,10 @@ The fixed configuration path is:
 `forge-init` generates it from the models and repository facts available on the user's machine. Major sections include:
 
 - artifact root and Git policy;
-- Local/GitHub/GitLab tracker intent;
-- workspace policy;
+- Local Issue artifact policy;
+- the implemented shared-serial workspace policy;
 - model profiles and role routing;
 - PRD review assurance and Blocker verification;
-- conditional Option Tournament policy;
 - authoritative typecheck, test, lint, and build commands;
 - Agent template location;
 - repository instructions and architecture context sources.
@@ -432,9 +431,9 @@ After changing Extension or Skill files in a running Pi session, use `/reload`.
 ## Current limitations
 
 - Only the `shared-serial + none + poolSize 1` execution path is implemented.
-- GitHub/GitLab Issue publication adapters are not implemented; Local Issue artifacts are authoritative.
-- Issues Amendment is not implemented.
-- Forge-controlled Repository Research Jobs and Option Tournament orchestration are not implemented. If a change requires that architecture gate, Forge must stop rather than simulate it with generic Subagents.
+- Local Issue artifacts are authoritative; external tracker publication is outside the current release.
+- Frozen PRDs and Issues are not amended in place. A planning change creates a successor Work Item and leaves the predecessor Runtime immutable.
+- Evidence mapping and minimum-sufficient design selection run inside `forge-prd`; there are no separate Map, Design, Options, or Spec artifacts.
 - There is no Forge-specific progress UI.
 - Automatic lifecycle continuation requires a live Pi session; a one-shot `pi -p` process is unsuitable for long-running background execution.
 - Recovery relies on Runtime state and lifecycle events because richer `pi-subagents` status/resume RPC is not yet available.

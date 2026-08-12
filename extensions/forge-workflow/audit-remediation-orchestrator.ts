@@ -236,7 +236,19 @@ export class AuditRemediationOrchestrator {
     const runtime = new RuntimeService(runtimeRoot);
     const resumed = await runtime.resumeHumanDecision(requestId);
     const selected = resumed.state.humanDecision?.answer?.selectedOptionId;
-    if (selected === "abort" || resumed.action === "require_prd_amendment") return { ...resumed, resumed: false };
+    if (selected === "abort") return { ...resumed, resumed: false };
+    if (resumed.action === "supersede_work_item") {
+      return {
+        ...resumed,
+        resumed: false,
+        nextAction: {
+          skill: "forge-prd",
+          tool: "forge_prd_supersede",
+          predecessorWorkItemRoot: new RemediationService(runtimeRoot).workItemRoot,
+          reason: "Frozen planning must be superseded by a new Work Item; the current Issue Runtime remains immutable and blocked.",
+        },
+      };
+    }
     if (resumed.action === "rerun_verifier") return { ...resumed, resumed: true, next: await this.startVerifier(runtimeRoot, ctx) };
     if (resumed.action === "resume_planner") return { ...resumed, resumed: true, next: await this.startPlanner(runtimeRoot, ctx) };
     throw new Error(`Unsupported Human Decision resume action: ${resumed.action}`);

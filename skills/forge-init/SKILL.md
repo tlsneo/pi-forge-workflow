@@ -23,15 +23,14 @@ Lead every section with the recommended answer. Give one short explanation only 
 Sections, in order:
 
 1. **Artifact Root** — recommend `.forge`, but allow any safe repository-relative path.
-2. **Issue Tracker** — infer GitHub/GitLab from remotes; otherwise recommend Local. Local artifacts always exist and external publication always requires confirmation.
-3. **Workspace** — recommend `shared-serial + none + poolSize 1` unless the user explicitly needs an isolated pool.
+2. **Issue Artifacts** — use Local artifacts. External tracker publication is not part of the current release.
+3. **Workspace** — use the implemented `shared-serial + none + poolSize 1` policy.
 4. **Model Profiles** — present the registry-backed simple, medium, complex, audit, and verifier recommendations. Ask whether to accept them as a set before offering per-profile edits.
 5. **Audit Assurance** — recommend Standard: one independent reviewer per PRD axis and a different-model Blocker Verifier when available.
-6. **Tournament** — recommend three Candidates, two Judges, one Synthesizer, blind review, conditional execution.
-7. **Commands** — present detected typecheck, test, lint, and build commands for confirmation.
-8. **Agent Templates** — present the recommended project Agent directory and any existing-file conflicts. Install Forge role templates plus project overrides that bind `Explore` to the `interactiveExplore`/simple profile and `Plan` to the `interactivePlan`/complex profile. Merge `.pi/subagents.json` with fail-closed unknown-type dispatch (`fallbackSubagent: none`) while keeping default agents enabled; project `Explore` and `Plan` overrides supply their Forge-selected models.
-9. **Repository Context** — present discovered `CONTEXT.md`, `CONTEXT-MAP.md`, nested Context files, ADR directories, architecture docs, and `docs/agents/domain.md`. Reuse existing sources; do not invent domain content. Ask only when multiple unindexed Context files make ownership ambiguous.
-10. **Repository Instructions** — use Pi's active context file deterministically: `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`; create `AGENTS.md` when none exists. Do not ask in the normal case. Require explicit confirmation before writing `AGENTS.override.md`, and report any lower-priority files shadowed by the selected file.
+6. **Commands** — present detected typecheck, test, lint, and build commands for confirmation.
+7. **Agent Templates** — present the recommended project Agent directory and any existing-file conflicts. Install the Task Worker, Remediation Planner, and Reviewer templates plus project overrides that bind `Explore` to the `interactiveExplore`/simple profile and `Plan` to the `interactivePlan`/complex profile. Merge `.pi/subagents.json` with fail-closed unknown-type dispatch (`fallbackSubagent: none`) while keeping default agents enabled; project `Explore` and `Plan` overrides supply their Forge-selected models.
+8. **Repository Context** — present discovered `CONTEXT.md`, `CONTEXT-MAP.md`, nested Context files, ADR directories, architecture docs, and `docs/agents/domain.md`. Reuse existing sources; do not invent domain content. Ask only when multiple unindexed Context files make ownership ambiguous.
+9. **Repository Instructions** — use Pi's active context file deterministically: `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`; create `AGENTS.md` when none exists. Do not ask in the normal case. Require explicit confirmation before writing `AGENTS.override.md`, and report any lower-priority files shadowed by the selected file.
 
 If the user says “all recommended”, retain every recommendation and stop asking except for unresolved conflicts, `AGENTS.override.md` confirmation, or missing required capabilities.
 
@@ -58,7 +57,7 @@ Completion criterion: the user explicitly approves the current preview hash and 
 
 ## 4. Apply
 
-Call `forge_init_apply` with the approved Preview Hash. Runtime validates paths, models, Thinking, workspace combinations, audit minima, tournament minima, and stale previews; writes `.pi/forge.json` atomically; saves a Config Generation and Receipt; installs versioned templates; updates only the managed Forge instruction block; and updates `.gitignore` when configured.
+Call `forge_init_apply` with the approved Preview Hash. Runtime validates paths, models, Thinking, workspace combinations, audit minima, and stale previews; writes `.pi/forge.json` atomically; saves a Config Generation and Receipt; installs versioned templates; updates only the managed Forge instruction block; and updates `.gitignore` when configured.
 
 Then call `forge_init_status` and report the config path, generation, hash, template status, strict pi-subagents status, repository instruction status, tracker mode, workspace mode, and selected model profiles.
 
@@ -66,4 +65,4 @@ Completion criterion: status is configured, all required templates and the manag
 
 ## Guardrails
 
-Forge safety invariants are not configurable: distinct review Bindings, Candidate/Judge separation, blind tournament review, independent Blocker verification, confirmation-gated external publication, immutable generations, and `Agent completed ≠ Job completed`.
+Forge safety invariants are not configurable: distinct review Bindings, independent Blocker verification, confirmation-gated external publication, immutable generations, and `Agent completed ≠ Job completed`.

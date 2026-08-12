@@ -1,6 +1,10 @@
 # Forge PRD tool contracts
 
-Read this before calling `forge_prd_checkpoint`, `forge_prd_submit`, or `forge_prd_review`.
+Read this before calling `forge_prd_checkpoint`, `forge_prd_submit`, `forge_prd_review`, or `forge_prd_supersede`.
+
+## Frozen Work Item supersession
+
+A frozen PRD is never amended in place. When later evidence requires a change to Acceptance, Scope, public Interface, compatibility, security, or selected architecture, call `forge_prd_supersede` with the frozen `workItemRoot`, reason, actor, and authorization evidence. Runtime creates a new discovery Work Item whose Manifest records the predecessor Work Item ID/root and frozen PRD Generation/hash. The predecessor PRD, Issues, Tasks, Runtime, commits, Receipts, and Audits remain immutable.
 
 ## Discovery checkpoint
 

@@ -139,6 +139,36 @@ describe("WorkItemService", () => {
     await expect(service.checkpoint({ decisions: [], evidence: [], summary: "change" })).rejects.toThrow("immutable");
   });
 
+  it("creates a successor Work Item instead of amending a frozen PRD in place", async () => {
+    const { root, service } = await createService();
+    await checkpointResolved(service);
+    await service.submitPrd(prd());
+    await passReviews(service);
+    await service.approve({ approvedBy: "user", evidence: "Approved predecessor" });
+    const predecessor = await service.freeze();
+    const successorRoot = `${root}-successor`;
+    roots.push(successorRoot);
+
+    const created = await service.createSuccessor({
+      successorRoot,
+      successorWorkItemId: "timeout-successor",
+      title: "CLI timeout successor",
+      repositoryRevision: "def456",
+      reason: "Execution proved that the public timeout contract must change.",
+      authorizedBy: "user",
+      authorizationEvidence: "User authorized a successor Work Item.",
+    });
+
+    expect(created.state.status).toBe("discovery");
+    expect(created.manifest.supersedes).toMatchObject({
+      predecessorWorkItemId: "timeout-work-item",
+      predecessorRoot: root,
+      predecessorPrdGeneration: predecessor.currentPrd!.generation,
+      predecessorPrdHash: predecessor.currentPrd!.contentHash,
+    });
+    expect((await service.store.readState()).status).toBe("frozen");
+  });
+
   it("rejects Delivery Boundary dependency cycles before PRD review", () => {
     const document = prd();
     document.deliveryBoundaries = [

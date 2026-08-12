@@ -49,9 +49,8 @@ function config(): ForgeConfig {
       profiles: { simple: profile, medium: profile, complex: profile, audit: profile, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } },
       routing: {
         "task.simple": "simple", "task.medium": "medium", "task.complex": "complex",
-        prdResearch: "medium", optionCandidate: "complex", optionJudge: "audit", optionSynthesizer: "complex",
         prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit",
-        blockerVerifier: "verifier", taskAudit: "audit", issueAudit: "audit",
+        blockerVerifier: "verifier", taskPreflight: "audit", remediationPlanner: "complex", issueAudit: "audit",
       },
     },
     review: {
@@ -59,7 +58,6 @@ function config(): ForgeConfig {
       prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 },
       blockerVerification: { profile: "verifier", requireDifferentModel: true },
     },
-    tournament: { enabled: true, candidates: 3, judges: 2, candidateProfile: "complex", judgeProfile: "audit", synthesizerProfile: "complex", blindReview: true },
     commands: {},
     agents: { directory: ".pi/agents", templateVersion: 1 },
   };

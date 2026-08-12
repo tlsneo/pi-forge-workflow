@@ -16,9 +16,11 @@ If `repositoryContext` is absent, fall back to repository instructions and disco
 
 Completion criterion: Runtime identity, repository revision, current state, next action, and applicable repository constraints are known.
 
-## 2. Build the decision tree
+## 2. Map repository evidence and build the decision tree
 
-Extract from the conversation:
+Map the change inside this phase; there is no separate public Map or Spec artifact. Trace the current implementation from user-visible entry through public Interface, call path, value transformation, owning Module, downstream consumers or side effects, and observable Test Seam. Inspect only behaviorally relevant Adapters, schemas, configuration, permissions, caches, migrations, generated artifacts, fixtures, and deployment constraints. Record each proven fact as revision-bound `path#Symbol` Evidence; separate facts, risks, and unresolved unknowns. Do not create a second Impact Map fact source—the checkpoint Evidence and final PRD are authoritative.
+
+Extract from the conversation and evidence:
 
 - settled user decisions;
 - repository facts that need evidence;
@@ -31,13 +33,13 @@ After each round, call `forge_prd_checkpoint` with the complete decision tree, e
 
 Completion criterion: every decision is answered or explicitly external; external items put the Work Item into `needs_external_input` rather than being guessed.
 
-## 3. Select a design
+## 3. Select the minimum sufficient design
 
-Trace the implementation-relevant data flow before selecting a Seam: entry/input boundary → normalization or transformation → owning Module → downstream consumer/side effect → observable test Seam. Record the exact `path#Symbol` evidence in flow order and freeze any material ownership or dependency-direction choice as a Decision. Keep app entry points and Composition Roots limited to dependency wiring and orchestration; place cohesive behavior in its existing owning Module. Split by stable responsibility, not file length, and do not create pass-through Modules merely to make files smaller. Fallback is default-deny: compatibility paths, default substitution, silent recovery, catch-and-continue behavior, and swallowed errors require explicit frozen behavior plus verification.
+Use the mapped data flow to choose the existing Seam and owning Module. Keep app entry points and Composition Roots limited to dependency wiring and orchestration; place cohesive behavior in its existing owner. Split by stable responsibility, not file length, and do not create pass-through Modules merely to make files smaller. Fallback is default-deny: compatibility paths, default substitution, silent recovery, catch-and-continue behavior, and swallowed errors require explicit frozen behavior plus verification.
 
-Prefer existing seams and the minimum sufficient change. A deterministic Option Tournament is required when at least two materially different architecture locations remain viable or the change affects a public interface, compatibility policy, migration, security, or long-lived module ownership. The Tournament Orchestrator is not implemented in the current MVP: stop before PRD submission and report this missing gate rather than simulating it with generic subagents. For changes that do not cross that threshold, record the selected existing seam and rejected alternatives with code evidence.
+Compare viable locations directly against repository evidence. Prefer the design that satisfies Acceptance while introducing the fewest new concepts, Interfaces, dependencies, branches, and modified paths. Record the selected location and materially plausible rejected alternatives in PRD Decisions. If surviving alternatives change user behavior, Scope, public Interface, compatibility, migration, security, or long-lived Module ownership, put that choice in the user Decision Frontier. Do not create a separate Design artifact or simulate a multi-agent tournament.
 
-Completion criterion: one low-risk existing-seam design is selected with no behavior-changing architecture choice implicit, or the Work Item stops at the missing Tournament gate.
+Completion criterion: one evidence-backed minimum sufficient design is selected, every material alternative is rejected with a reason or assigned to the user, and no architecture choice remains implicit.
 
 ## 4. Draft one PRD
 
@@ -70,7 +72,7 @@ Each Reviewer submits exactly once through `forge_prd_review` using its Binding 
 
 When all axes finish, reported Blockers automatically start a different-Binding Blocker Verifier following the [Blocker verification contract](references/blocker-verification.md). Confirmed Blockers block Amendment; rejected Blockers retain the immutable original Review but allow the gate to proceed; missing evidence enters `needs_external_input`.
 
-When a Blocker is confirmed or the user explicitly authorizes correction, update the structured PRD and call `forge_prd_amend`. Runtime creates a new immutable Generation, computes all three review surfaces, carries forward only passed reviews whose surface hash is unchanged, and automatically starts fresh Review Jobs only for invalidated axes. Never overwrite a prior PRD, Review, Binding, or Verification artifact.
+When a Blocker is confirmed or the user explicitly authorizes correction before Freeze, update the structured PRD and call `forge_prd_amend`. Runtime creates a new immutable Generation, computes all three review surfaces, carries forward only passed reviews whose surface hash is unchanged, and automatically starts fresh Review Jobs only for invalidated axes. Never overwrite a prior PRD, Review, Binding, or Verification artifact.
 
 Completion criterion: every Review Job has a structured result, every Blocker has an independent verification result, and the current Generation is `awaiting_approval`.
 
@@ -79,5 +81,7 @@ Completion criterion: every Review Job has a structured result, every Blocker ha
 Show the generated PRD to the user and wait for explicit approval. Then call `forge_prd_approve` with the approval evidence, followed by `forge_prd_freeze`.
 
 Completion criterion: Runtime status is `frozen` and a Receipt records PRD generation, hash, three reviews, and user approval.
+
+A frozen PRD is immutable. If later execution proves that Acceptance, Scope, public Interface, compatibility, security, or the selected architecture must change, call `forge_prd_supersede` to create a successor Work Item. Preserve the predecessor and its Issue Runtime unchanged; restart discovery and review in the successor.
 
 Phase boundary: the frozen PRD may proceed to `forge-issues`; do not create Issues, Tasks, or product-code changes here.

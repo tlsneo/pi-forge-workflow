@@ -33,17 +33,12 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
       "task.complex": "complex",
       "interactiveExplore": "simple",
       "interactivePlan": "complex",
-      "prdResearch": "medium",
-      "optionCandidate": "complex",
-      "optionJudge": "audit",
-      "optionSynthesizer": "complex",
       "prdCoverageReview": "audit",
       "prdEvidenceReview": "audit",
       "prdArchitectureReview": "audit",
       "blockerVerifier": "verifier",
       "taskPreflight": "audit",
       "remediationPlanner": "complex",
-      "taskAudit": "audit",
       "issueAudit": "audit"
     }
   },
@@ -58,15 +53,6 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
       "profile": "verifier",
       "requireDifferentModel": true
     }
-  },
-  "tournament": {
-    "enabled": true,
-    "candidates": 3,
-    "judges": 2,
-    "candidateProfile": "complex",
-    "judgeProfile": "audit",
-    "synthesizerProfile": "complex",
-    "blindReview": true
   },
   "commands": {
     "typecheck": "npm run typecheck",
@@ -91,17 +77,9 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
 }
 ```
 
-Tracker variants:
+The current release supports only Local Issue artifacts and `shared-serial + isolationBackend: none + poolSize: 1`. External tracker publication and isolated workspace pools are not configurable until their execution adapters exist.
 
-```json
-{ "mode": "github", "repository": "owner/repo", "publishRequiresConfirmation": true }
-```
-
-```json
-{ "mode": "gitlab", "project": "group/project", "publishRequiresConfirmation": true }
-```
-
-Valid Thinking values are `minimal`, `low`, `medium`, `high`, and `xhigh`. Every profile uses an exact available `provider/model`. `shared-serial` requires backend `none` and pool size `1`; `isolated-pool` requires a non-`none` backend and pool size of at least `2`.
+Valid Thinking values are `minimal`, `low`, `medium`, `high`, and `xhigh`. Every profile uses an exact available `provider/model`.
 
 `instructions.file` records Pi's active repository context file. Selection follows Pi's load priority: `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, then `CLAUDE.MD`; Forge creates `AGENTS.md` when none exists. Forge owns only the content between `<!-- pi-forge-workflow:start -->` and `<!-- pi-forge-workflow:end -->`. Content outside those markers remains user-owned.
 

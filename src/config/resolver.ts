@@ -14,15 +14,20 @@ export interface ResolvedForgeProfile extends ModelProfile {
 
 export async function loadForgeConfig(repositoryRoot: string): Promise<ForgeConfig> {
   const path = join(repositoryRoot, ".pi", "forge.json");
-  let config: ForgeConfig;
+  let raw: ForgeConfig & { tournament?: unknown };
   try {
-    config = JSON.parse(await readFile(path, "utf8")) as ForgeConfig;
+    raw = JSON.parse(await readFile(path, "utf8")) as ForgeConfig & { tournament?: unknown };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(`Forge is not configured for ${repositoryRoot}; run /skill:forge-init`);
     }
     throw error;
   }
+  const routing = { ...raw.models.routing };
+  if (!routing.taskPreflight && routing.taskAudit) routing.taskPreflight = routing.taskAudit;
+  for (const deadRoute of ["prdResearch", "optionCandidate", "optionJudge", "optionSynthesizer", "taskAudit"]) delete routing[deadRoute];
+  const { tournament: _legacyTournament, ...base } = raw;
+  const config: ForgeConfig = { ...base, models: { ...base.models, routing } };
   validateForgeConfig(config);
   return config;
 }

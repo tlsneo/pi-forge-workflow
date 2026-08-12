@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-一个面向 [Pi](https://pi.dev) 的确定性、证据驱动工程工作流：把功能讨论转换为经过审查的规划事实、小而可执行的 Task、经过权威验证的 Git Commit、最终 Audit，以及有边界的 Remediation。
+一个面向 [Pi](https://pi.dev) 的确定性、证据驱动工程工作流：把功能讨论转换为经过审查的 PRD、精确的 Local Issue、小而可执行的 Task、经过权威验证的 Git Commit、最终 Audit，以及有边界的 Remediation。
 
 > **状态：**实验性 MVP。当前只实现了刻意收敛的 `shared-serial` 执行路径，并在不确定时 Fail-closed。采用前请阅读[当前限制](#当前限制)。
 
@@ -82,7 +82,7 @@ flowchart TD
     P --> PR[结构化 PRD Generation]
     PR --> RV{Coverage + Evidence + Architecture Review}
     RV -->|通过| AP[用户显式批准]
-    RV -->|确认 Blocker| PA[不可变 PRD Amendment]
+    RV -->|Freeze 前确认 Blocker| PA[新的不可变 PRD Generation]
     PA --> RV
     AP --> FPRD[冻结 PRD + Receipt]
 
@@ -221,7 +221,7 @@ Commit Subject 严格使用冻结 Task Title。Forge 的内部 ID 只保存在 R
 Slice Gate 全部通过后，Forge 启动三个独立 Final Issue Audit：
 
 - **Standards**；
-- **Spec / Integration**；
+- **Acceptance / Integration**；
 - **Architecture / Minimality**。
 
 Blocker 进入受控闭环：
@@ -395,11 +395,10 @@ Artifact Root 默认为 `.forge`，通常加入 Git Ignore。这里包含机器�
 `forge-init` 根据当前机器可用模型和目标仓库事实生成配置，主要包含：
 
 - Artifact Root 和 Git Policy；
-- Local / GitHub / GitLab Tracker 意图；
-- Workspace Policy；
+- Local Issue Artifact Policy；
+- 已实现的 Shared-serial Workspace Policy；
 - Model Profile 与 Role Routing；
 - PRD Review Assurance 和 Blocker Verification；
-- 条件 Option Tournament Policy；
 - 权威 Typecheck、Test、Lint 和 Build Command；
 - Agent Template 位置；
 - Repository Instructions 和 Architecture Context Source。
@@ -432,9 +431,9 @@ pi -e ./extensions/forge-workflow/index.ts
 ## 当前限制
 
 - 只实现了 `shared-serial + none + poolSize 1` 执行路径。
-- GitHub / GitLab Issue 发布 Adapter 尚未实现；Local Issue Artifact 是当前权威事实。
-- Issues Amendment 尚未实现。
-- Forge-controlled Repository Research Job 和 Option Tournament Orchestrator 尚未实现。如果某项改动必须经过该架构门禁，Forge 应该停止，不能用普通 Subagent 模拟正式 Job。
+- Local Issue Artifact 是当前权威事实；外部 Tracker 发布不属于当前版本。
+- 冻结 PRD 和 Issue 不原地 Amendment。规划变化会创建 Successor Work Item，并保持前序 Runtime 不可变。
+- Evidence Mapping 和最小充分 Design Selection 已内置在 `forge-prd`；不存在独立 Map、Design、Options 或 Spec Artifact。
 - 尚无 Forge 专用进度 UI。
 - 自动生命周期推进要求 Pi Session 保持运行；一次性 `pi -p` 不适合长期后台执行。
 - 由于 `pi-subagents` 尚无更完整的 Status / Resume RPC，恢复依赖 Runtime State 和 Lifecycle Event。

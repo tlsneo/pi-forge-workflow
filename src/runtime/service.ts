@@ -374,7 +374,7 @@ export class RuntimeService {
     const current = await this.store.readState();
     if (current.auditJobs && Object.values(current.auditJobs).some((job) => ["pending", "starting", "running", "retry_ready", "interrupted"].includes(job.status))) return current;
     if (current.issueStatus !== "auditing") throw new Error(`Issue Audit cannot start from ${current.issueStatus}`);
-    const axes: IssueAuditAxis[] = ["standards", "spec_integration", "architecture_minimality"];
+    const axes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
     const jobs = Object.fromEntries(axes.map((axis) => [axis, {
       id: `issue-audit-${(current.auditGeneration ?? 0) + 1}-${axis}`,
       axis,
@@ -480,7 +480,7 @@ export class RuntimeService {
       (state.audits ??= {})[axis] = review;
       if (verdict === "blocked") state.issueStatus = "blocked";
     }, { details: { axis, bindingId, verdict } });
-    const axes: IssueAuditAxis[] = ["standards", "spec_integration", "architecture_minimality"];
+    const axes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
     if (axes.every((candidate) => next.audits?.[candidate]?.verdict === "passed")) {
       return this.markIssueCompleted({ schemaVersion: 1, issueId: next.issueId, audits: next.audits, completedAt: new Date().toISOString() });
     }
@@ -615,7 +615,7 @@ export class RuntimeService {
           evidence: unresolved.flatMap((result) => result.missingEvidence),
           options: [
             { id: "provide_evidence", label: "Provide evidence and rerun verification", description: "Supply the requested repository, command, policy, or external evidence.", consequences: ["Blocker Verifier runs again", "No product code changes before verification"], resumeAction: "rerun_verifier" as const },
-            { id: "amend_scope", label: "Amend the frozen PRD or Issue", description: "Change product scope or approved decisions through the planning workflow.", consequences: ["Current Runtime remains blocked", "A formal PRD/Issue Amendment is required"], resumeAction: "require_prd_amendment" as const },
+            { id: "amend_scope", label: "Supersede frozen planning", description: "Create a successor Work Item for changed product scope or approved decisions.", consequences: ["Current Runtime remains blocked and immutable", "A new Work Item restarts PRD discovery with an explicit predecessor link"], resumeAction: "supersede_work_item" as const },
             { id: "abort", label: "Abort this Issue", description: "Stop delivery without applying an unverified repair.", consequences: ["No further Workers are started", "Completed immutable history is preserved"], resumeAction: "abort_issue" as const },
           ],
           recommendedOptionId: "provide_evidence",
@@ -757,7 +757,7 @@ export class RuntimeService {
           if (state.remediationPlan) state.remediationPlan.status = "needs_user";
           return;
         }
-        if (resumeAction === "require_prd_amendment") {
+        if (resumeAction === "supersede_work_item") {
           state.issueStatus = "needs_user";
           return;
         }
