@@ -19,6 +19,36 @@
 
 Forge 把工作流本身视为确定性状态机。LLM 负责提交结构化 Proposal；Runtime 负责校验身份、依赖、Hash、状态转换、Verification、Git Scope 和不可变历史。
 
+## 安装
+
+### 从 Git 安装
+
+仓库托管后，安装两个 Package：
+
+```bash
+pi install npm:@tintinweb/pi-subagents
+pi install https://github.com/tlsneo/pi-forge-workflow
+```
+
+也可以固定 Tag 或 Commit：
+
+```bash
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.2.0
+```
+
+### 从本地 Checkout 安装
+
+```bash
+git clone https://github.com/tlsneo/pi-forge-workflow.git
+cd pi-forge-workflow
+npm install
+pi install /absolute/path/to/pi-forge-workflow
+```
+
+如果希望只安装到当前项目，给 `pi install` 增加 `-l`。
+
+> 当前 `package.json` 仍是 `"private": true` 和版本 `0.2.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
+
 ## 公开工作流
 
 ```text
@@ -242,36 +272,6 @@ workspace.mode: shared-serial
 isolationBackend: none
 poolSize: 1
 ```
-
-## 安装
-
-### 从 Git 安装
-
-仓库托管后，安装两个 Package：
-
-```bash
-pi install npm:@tintinweb/pi-subagents
-pi install https://github.com/<owner>/pi-forge-workflow
-```
-
-也可以固定 Tag 或 Commit：
-
-```bash
-pi install https://github.com/<owner>/pi-forge-workflow@v0.1.0
-```
-
-### 从本地 Checkout 安装
-
-```bash
-git clone https://github.com/<owner>/pi-forge-workflow.git
-cd pi-forge-workflow
-npm install
-pi install /absolute/path/to/pi-forge-workflow
-```
-
-如果希望只安装到当前项目，给 `pi install` 增加 `-l`。
-
-> 当前 `package.json` 仍是 `"private": true` 和版本 `0.0.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
 
 ## 如何使用
 

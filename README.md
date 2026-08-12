@@ -19,6 +19,36 @@ Large changes often fail between planning and implementation:
 
 Forge treats the workflow itself as a deterministic state machine. The language model proposes structured content, while the Runtime validates identity, dependencies, hashes, state transitions, verification, Git scope, and immutable history.
 
+## Installation
+
+### Install from Git
+
+After this repository is hosted, install both packages:
+
+```bash
+pi install npm:@tintinweb/pi-subagents
+pi install https://github.com/tlsneo/pi-forge-workflow
+```
+
+A tag or commit may be pinned:
+
+```bash
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.2.0
+```
+
+### Install from a local checkout
+
+```bash
+git clone https://github.com/tlsneo/pi-forge-workflow.git
+cd pi-forge-workflow
+npm install
+pi install /absolute/path/to/pi-forge-workflow
+```
+
+For project-local Pi installation, add `-l` to `pi install`.
+
+> This repository currently has `"private": true` and version `0.2.0`, so the documented distribution path is Git or a local checkout, not npm publication.
+
 ## Public workflow
 
 ```text
@@ -242,36 +272,6 @@ workspace.mode: shared-serial
 isolationBackend: none
 poolSize: 1
 ```
-
-## Installation
-
-### Install from Git
-
-After this repository is hosted, install both packages:
-
-```bash
-pi install npm:@tintinweb/pi-subagents
-pi install https://github.com/<owner>/pi-forge-workflow
-```
-
-A tag or commit may be pinned:
-
-```bash
-pi install https://github.com/<owner>/pi-forge-workflow@v0.1.0
-```
-
-### Install from a local checkout
-
-```bash
-git clone https://github.com/<owner>/pi-forge-workflow.git
-cd pi-forge-workflow
-npm install
-pi install /absolute/path/to/pi-forge-workflow
-```
-
-For project-local Pi installation, add `-l` to `pi install`.
-
-> This repository currently has `"private": true` and version `0.0.0`, so the documented distribution path is Git or a local checkout, not npm publication.
 
 ## Usage
 
