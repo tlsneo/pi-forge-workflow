@@ -1,3 +1,4 @@
+export * from "./naming.js";
 export * from "./renderer.js";
 export * from "./review-contracts.js";
 export * from "./review-prompts.js";

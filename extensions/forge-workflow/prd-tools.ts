@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadForgeConfig } from "../../src/config/resolver.js";
 import { WorkItemService } from "../../src/work-item/service.js";
+import { allocateWorkItem } from "../../src/work-item/naming.js";
 import { discoverGitRepositories, resolveGitRepository } from "../../src/work-item/repositories.js";
 import type { DiscoveryCheckpoint, ForgePrd, PrdBlockerVerificationResult, PrdReview, ReviewAxis, ReviewVerdict } from "../../src/work-item/types.js";
 import type { PrdReviewOrchestrator } from "./prd-review-orchestrator.js";
@@ -110,14 +110,6 @@ function normalizeRoot(cwd: string, input: string): string {
   return resolve(cwd, input.replace(/^@/, ""));
 }
 
-function slugify(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 40) || "change";
-}
-
 function asObject<T>(value: unknown, label: string): T {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as T;
@@ -148,13 +140,25 @@ export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrches
     }),
     async execute(_id, params, _signal, _update, ctx) {
       let root: string;
+      let allocatedWorkItemId: string | undefined;
+      let selectedRepository: Awaited<ReturnType<typeof resolveGitRepository>> | undefined;
       if (params.workItemRoot) {
         root = normalizeRoot(ctx.cwd, params.workItemRoot);
         if (root === resolve(ctx.cwd)) throw new Error("The Control Root cannot be used as a Work Item root; omit workItemRoot to create under the configured artifact directory");
       } else {
         if (!params.title?.trim()) throw new Error("title is required when creating a Work Item");
+        let target = params.repositoryRoot?.trim();
+        const repositories = await discoverGitRepositories(ctx.cwd);
+        if (!target) {
+          if (repositories.length === 1) target = repositories[0]!.repositoryRoot;
+          else if (repositories.length === 0) throw new Error("No Git Working Tree was discovered under the Control Root; pass repositoryRoot explicitly");
+          else return text("Repository selection is required before creating the Work Item.", { controlRoot: ctx.cwd, repositories, needsRepositorySelection: true });
+        }
+        selectedRepository = await resolveGitRepository(ctx.cwd, target);
         const config = await loadForgeConfig(ctx.cwd);
-        root = join(ctx.cwd, config.artifacts.root, "work-items", `${slugify(params.title)}-${randomUUID().slice(0, 8)}`);
+        const allocation = await allocateWorkItem(join(ctx.cwd, config.artifacts.root, "work-items"), params.title);
+        root = allocation.root;
+        allocatedWorkItemId = allocation.workItemId;
       }
 
       const service = new WorkItemService(root);
@@ -164,16 +168,19 @@ export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrches
       }
       if (!(await service.store.exists())) {
         if (!params.title?.trim()) throw new Error("Work Item does not exist; title is required to initialize it");
-        let target = params.repositoryRoot?.trim();
-        const repositories = await discoverGitRepositories(ctx.cwd);
-        if (!target) {
-          if (repositories.length === 1) target = repositories[0]!.repositoryRoot;
-          else if (repositories.length === 0) throw new Error("No Git Working Tree was discovered under the Control Root; pass repositoryRoot explicitly");
-          else return text("Repository selection is required before creating the Work Item.", { controlRoot: ctx.cwd, repositories, needsRepositorySelection: true });
+        let repository = selectedRepository;
+        if (!repository) {
+          let target = params.repositoryRoot?.trim();
+          const repositories = await discoverGitRepositories(ctx.cwd);
+          if (!target) {
+            if (repositories.length === 1) target = repositories[0]!.repositoryRoot;
+            else if (repositories.length === 0) throw new Error("No Git Working Tree was discovered under the Control Root; pass repositoryRoot explicitly");
+            else return text("Repository selection is required before creating the Work Item.", { controlRoot: ctx.cwd, repositories, needsRepositorySelection: true });
+          }
+          repository = await resolveGitRepository(ctx.cwd, target);
         }
-        const repository = await resolveGitRepository(ctx.cwd, target);
         await service.initialize({
-          workItemId: root.split("/").at(-1) ?? randomUUID(),
+          workItemId: allocatedWorkItemId ?? root.split("/").at(-1)!,
           title: params.title,
           controlRoot: ctx.cwd,
           repositoryRoot: repository.repositoryRoot,
@@ -207,21 +214,23 @@ export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrches
       if (resolve(ctx.cwd) !== resolve(predecessorManifest.controlRoot)) throw new Error(`Run forge-prd from the frozen Control Root: ${predecessorManifest.controlRoot}`);
       const config = await loadForgeConfig(predecessorManifest.controlRoot);
       const title = params.title?.trim() || predecessorManifest.title;
-      const successorId = `${slugify(title)}-${randomUUID().slice(0, 8)}`;
-      const successorRoot = join(predecessorManifest.controlRoot, config.artifacts.root, "work-items", successorId);
+      const successor = await allocateWorkItem(
+        join(predecessorManifest.controlRoot, config.artifacts.root, "work-items"),
+        title,
+      );
       const created = await new WorkItemService(predecessorRoot).createSuccessor({
-        successorRoot,
-        successorWorkItemId: successorId,
+        successorRoot: successor.root,
+        successorWorkItemId: successor.workItemId,
         title,
         repositoryRevision: (await resolveGitRepository(predecessorManifest.controlRoot, predecessorManifest.repositoryRoot)).revision,
         reason: params.reason,
         authorizedBy: params.authorizedBy,
         authorizationEvidence: params.authorizationEvidence,
       });
-      await orchestrator.index(successorRoot);
-      return text(`Created successor Work Item ${successorId}. The predecessor remains frozen; continue discovery in ${successorRoot}.`, {
+      await orchestrator.index(successor.root);
+      return text(`Created successor Work Item ${successor.directoryName}. The predecessor remains frozen; continue discovery in ${successor.root}.`, {
         predecessorRoot,
-        workItemRoot: successorRoot,
+        workItemRoot: successor.root,
         ...created,
       });
     },

@@ -332,7 +332,7 @@ Forge synthesizes the conversation, records repository evidence and open decisio
 Keep the returned Work Item root, for example:
 
 ```text
-.forge/work-items/configurable-request-timeout-a1b2c3d4
+.forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 ```
 
 ### 3. Materialize Issues
@@ -340,7 +340,7 @@ Keep the returned Work Item root, for example:
 ```text
 /skill:forge-issues
 
-Work Item root: .forge/work-items/configurable-request-timeout-a1b2c3d4
+Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 ```
 
 Every frozen Delivery Boundary becomes exactly one Local Issue artifact.
@@ -350,7 +350,7 @@ Every frozen Delivery Boundary becomes exactly one Local Issue artifact.
 ```text
 /skill:forge-tasks
 
-Work Item root: .forge/work-items/configurable-request-timeout-a1b2c3d4
+Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 Issue: I001
 ```
 
@@ -361,17 +361,19 @@ Forge traces the implementation flow, creates vertical Slices and detailed Micro
 ```text
 /skill:forge-run
 
-Runtime root: .forge/work-items/configurable-request-timeout-a1b2c3d4/issues/I001/runtime
+Runtime root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4/issues/I001/runtime
 ```
 
 Keep the interactive Pi session open. `forge-run` advances only the next deterministic action: start a Worker, finalize a Handoff, verify and commit a Task, run a Slice Gate, start final Audits, or enter remediation/human-decision recovery.
 
 ## Generated artifacts
 
+Work Item directories use a monotonically increasing, never-reused display number such as `WI-0001`, so filesystem name order matches creation order. The readable slug and random suffix retain readability and unique identity; the immutable internal `workItemId` does not include the display number.
+
 With the default artifact root, a Work Item resembles:
 
 ```text
-.forge/work-items/<work-item>/
+.forge/work-items/WI-0001-<work-item>/
 ├── PRD.md
 ├── prd/
 │   ├── prd.json

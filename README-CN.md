@@ -332,7 +332,7 @@ Forge 会吸收当前讨论、记录仓库 Evidence 和开放 Decision、生成 
 保存返回的 Work Item Root，例如：
 
 ```text
-.forge/work-items/configurable-request-timeout-a1b2c3d4
+.forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 ```
 
 ### 3. 物化 Issue
@@ -340,7 +340,7 @@ Forge 会吸收当前讨论、记录仓库 Evidence 和开放 Decision、生成 
 ```text
 /skill:forge-issues
 
-Work Item root: .forge/work-items/configurable-request-timeout-a1b2c3d4
+Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 ```
 
 每个冻结 Delivery Boundary 精确生成一个 Local Issue Artifact。
@@ -350,7 +350,7 @@ Work Item root: .forge/work-items/configurable-request-timeout-a1b2c3d4
 ```text
 /skill:forge-tasks
 
-Work Item root: .forge/work-items/configurable-request-timeout-a1b2c3d4
+Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 Issue: I001
 ```
 
@@ -361,17 +361,19 @@ Forge 追踪实现数据流，生成 Vertical Slice 和详细 Micro Task，并�
 ```text
 /skill:forge-run
 
-Runtime root: .forge/work-items/configurable-request-timeout-a1b2c3d4/issues/I001/runtime
+Runtime root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4/issues/I001/runtime
 ```
 
 保持 Pi Interactive Session 运行。`forge-run` 每次只推进 Runtime 允许的下一个动作：启动 Worker、完成 Handoff、验证并 Commit Task、运行 Slice Gate、启动 Final Audit，或者进入 Remediation / Human Decision 恢复路径。
 
 ## 生成的 Artifact
 
+Work Item 目录使用单调递增、不可复用的显示编号 `WI-0001`，因此文件系统按名称即可保持创建顺序；后面的 Slug 和随机后缀继续提供可读性与唯一身份。内部不可变 `workItemId` 不包含这个显示编号。
+
 使用默认 Artifact Root 时，一个 Work Item 类似：
 
 ```text
-.forge/work-items/<work-item>/
+.forge/work-items/WI-0001-<work-item>/
 ├── PRD.md
 ├── prd/
 │   ├── prd.json
