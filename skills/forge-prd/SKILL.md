@@ -1,0 +1,83 @@
+---
+name: forge-prd
+description: Turn the current feature discussion into an evidence-backed, reviewed, user-approved PRD with conditional Mermaid diagrams and a frozen content hash.
+disable-model-invocation: true
+---
+
+# Forge PRD
+
+Convert the conversation into one frozen planning artifact. Preserve answered decisions; interview only the open frontier. Before submitting structured data, read [the tool contracts](references/contracts.md).
+
+## 1. Open the Work Item
+
+Call `forge_prd_open`. To create, omit `workItemRoot` and pass a short stable title; to resume, pass the exact returned Work Item root. Read `.pi/forge.json`; from `repositoryContext`, load every entry point and only the ADR, architecture, or supplemental sources applicable to this change. Treat these sources as repository evidence and carry applicable constraints into Decisions, Non-goals, Risks, and Task-facing Acceptance behavior.
+
+If `repositoryContext` is absent, fall back to repository instructions and discover relevant Context, ADR, glossary, and architecture material before drafting.
+
+Completion criterion: Runtime identity, repository revision, current state, next action, and applicable repository constraints are known.
+
+## 2. Build the decision tree
+
+Extract from the conversation:
+
+- settled user decisions;
+- repository facts that need evidence;
+- user decisions still open;
+- facts held by an external stakeholder.
+
+Use the `grilling` protocol for open user decisions: dependencies form a decision tree, the frontier contains every question whose prerequisites are settled, each round asks the whole frontier, and every question includes a recommended answer. Until Forge-controlled Research Jobs are implemented, find repository facts with the parent session's read-only tools. Do not call generic `Agent`, `Explore`, or `Plan`; they bypass Forge model routing, Bindings, and evidence receipts. Use an external questionnaire only for facts unavailable to both repository and user.
+
+After each round, call `forge_prd_checkpoint` with the complete decision tree, evidence set, and concise discovery summary.
+
+Completion criterion: every decision is answered or explicitly external; external items put the Work Item into `needs_external_input` rather than being guessed.
+
+## 3. Select a design
+
+Trace the implementation-relevant data flow before selecting a Seam: entry/input boundary → normalization or transformation → owning Module → downstream consumer/side effect → observable test Seam. Record the exact `path#Symbol` evidence in flow order and freeze any material ownership or dependency-direction choice as a Decision. Keep app entry points and Composition Roots limited to dependency wiring and orchestration; place cohesive behavior in its existing owning Module. Split by stable responsibility, not file length, and do not create pass-through Modules merely to make files smaller. Fallback is default-deny: compatibility paths, default substitution, silent recovery, catch-and-continue behavior, and swallowed errors require explicit frozen behavior plus verification.
+
+Prefer existing seams and the minimum sufficient change. A deterministic Option Tournament is required when at least two materially different architecture locations remain viable or the change affects a public interface, compatibility policy, migration, security, or long-lived module ownership. The Tournament Orchestrator is not implemented in the current MVP: stop before PRD submission and report this missing gate rather than simulating it with generic subagents. For changes that do not cross that threshold, record the selected existing seam and rejected alternatives with code evidence.
+
+Completion criterion: one low-risk existing-seam design is selected with no behavior-changing architecture choice implicit, or the Work Item stops at the missing Tournament gate.
+
+## 4. Draft one PRD
+
+Call `forge_prd_submit` with structured data. The Runtime generates `prd/PRD.md`; do not hand-edit the generated file.
+
+The PRD covers problem, solution, goals, non-goals, actors, focused user stories, stable Acceptance IDs, happy/error/edge behavior, design decisions, `path#Symbol` impact evidence, test seams, risks, migration, rollback, open questions, and a Delivery Plan. Each Delivery Boundary freezes its delivery goal and scope as well as outcome and traceability, so the Issue phase cannot widen them. Use one `DB-01` boundary by default. Split into `DB-02...` only when each outcome can be independently implemented, verified, delivered, rolled back, and closed. Delivery-boundary choices belong in the PRD Decision Frontier and use the same Grilling protocol when user judgment is required.
+
+Add Mermaid only when it compresses real complexity:
+
+- cross-module flow → `flowchart`;
+- order-sensitive interaction → `sequenceDiagram`;
+- real lifecycle → `stateDiagram-v2`;
+- changed entity relationships → `erDiagram`.
+
+A local change may have no diagram.
+
+The generated top-level human entry is `<work-item-root>/PRD.md`; `prd/prd.json` and `prd/generations/` remain the structured current pointer and immutable history. Completion criterion: the structured PRD validates, every Acceptance is owned by a Delivery Boundary, and the generated Markdown path and content hash are returned.
+
+## 5. Review
+
+`forge_prd_submit` automatically creates Binding-bound Review Jobs and starts the configured read-only Reviewers through pi-subagents. Do not manually launch the fixed gates. Each Reviewer follows only its contract: [Coverage](references/review-coverage.md), [Evidence](references/review-evidence.md), or [Architecture](references/review-architecture.md).
+
+Review axes:
+
+- Coverage: behavior, errors, scope, and Acceptance completeness;
+- Evidence: repository claims, consumers, and test seams;
+- Architecture: selected seam, minimality, compatibility, and rollback.
+
+Each Reviewer submits exactly once through `forge_prd_review` using its Binding ID. Runtime rejects stale Generation, Axis, Surface Hash, duplicate, or manual-bypass submissions. `Agent completed` without a structured submission becomes `interrupted`; normal in-session recovery creates a fresh Binding. After an explicit coordinator restart, use `forge_prd_resume_reviews` with a takeover reason.
+
+When all axes finish, reported Blockers automatically start a different-Binding Blocker Verifier following the [Blocker verification contract](references/blocker-verification.md). Confirmed Blockers block Amendment; rejected Blockers retain the immutable original Review but allow the gate to proceed; missing evidence enters `needs_external_input`.
+
+When a Blocker is confirmed or the user explicitly authorizes correction, update the structured PRD and call `forge_prd_amend`. Runtime creates a new immutable Generation, computes all three review surfaces, carries forward only passed reviews whose surface hash is unchanged, and automatically starts fresh Review Jobs only for invalidated axes. Never overwrite a prior PRD, Review, Binding, or Verification artifact.
+
+Completion criterion: every Review Job has a structured result, every Blocker has an independent verification result, and the current Generation is `awaiting_approval`.
+
+## 6. Approve and freeze
+
+Show the generated PRD to the user and wait for explicit approval. Then call `forge_prd_approve` with the approval evidence, followed by `forge_prd_freeze`.
+
+Completion criterion: Runtime status is `frozen` and a Receipt records PRD generation, hash, three reviews, and user approval.
+
+Phase boundary: the frozen PRD may proceed to `forge-issues`; do not create Issues, Tasks, or product-code changes here.
