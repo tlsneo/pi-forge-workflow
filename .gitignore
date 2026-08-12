@@ -1,0 +1,22 @@
+ node_modules/                                                                                                 
+ dist/                                                                                                         
+ coverage/                                                                                                     
+ *.tsbuildinfo                                                                                                 
+ *.log                                                                                                         
+ *.tgz                                                                                                         
+ .DS_Store                                                                                                     
+                                                                                                               
+ # Machine-specific Pi/Agent context and Forge configuration/runtime artifacts                                 
+ /.pi/                                                                                                         
+ /.agents/                                                                                                     
+ /AGENT.md                                                                                                     
+ /AGENTS.md                                                                                                    
+ /AGENTS.MD                                                                                                    
+ /AGENTS.override.md                                                                                           
+ /CLAUDE.md                                                                                                    
+ /CLAUDE.MD                                                                                                    
+ /.forge/                                                                                                      
+ /.work/                                                                                                       
+ /.scratch/                                                                                                    
+ /.prototype-runtime/                                                                                          
+ /.prototype-prd/   
