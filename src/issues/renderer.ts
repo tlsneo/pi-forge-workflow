@@ -78,6 +78,8 @@ ${bullets(issue.dependencies)}
 
 ---
 
+Target Repository: \`${issue.source.repositoryRoot}\` at \`${issue.source.repositoryRevision}\`
+
 Source: PRD Generation ${issue.source.prdGeneration} — \`${issue.source.prdHash}\`
 `;
 }

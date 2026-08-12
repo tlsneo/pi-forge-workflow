@@ -10,7 +10,7 @@ The Runtime is authoritative. The coordinator may call workflow tools but never 
 
 ## 1. Open the Runtime
 
-Call `forge_run_status` with the exact Runtime root returned by `forge-tasks`. Require a committed, clean Git workspace, `shared-serial` mode, valid Task contracts, and either a ready Frontier or a mechanically recoverable Handoff.
+Call `forge_run_status` with the exact Runtime root returned by `forge-tasks`. Runtime inherits the Work Item Control Root and Target Repository. Forge configuration, Agent templates, and artifacts remain at the Control Root; product reads, Workers, verification, Audit, Git commits, and rollback operate only in the Target Repository. Require `workspaceRoot` to equal the canonical Target Git Working Tree, a committed clean baseline, `shared-serial` mode, valid Task contracts, and either a ready Frontier or a mechanically recoverable Handoff.
 
 Completion criterion: Issue status, Task states, Bindings, Receipts, Slice Gates, Audit Jobs, and current Frontier are known.
 

@@ -54,14 +54,14 @@ function changeFor(path: string, current: string | undefined, next: string, conf
 }
 
 export class ForgeConfigService {
-  readonly repositoryRoot: string;
+  readonly controlRoot: string;
   readonly packageRoot: string;
   readonly configPath: string;
 
-  constructor(repositoryRoot: string, packageRoot: string) {
-    this.repositoryRoot = repositoryRoot;
+  constructor(controlRoot: string, packageRoot: string) {
+    this.controlRoot = controlRoot;
     this.packageRoot = packageRoot;
-    this.configPath = join(repositoryRoot, ".pi", "forge.json");
+    this.configPath = join(controlRoot, ".pi", "forge.json");
   }
 
   async readConfig(): Promise<ForgeConfig | undefined> {
@@ -85,13 +85,13 @@ export class ForgeConfigService {
     const currentTemplates = currentConfig
       ? new Map((await desiredAgentTemplates(this.packageRoot, currentConfig)).map((template) => [template.file, template.content]))
       : new Map<string, string>();
-    const retiredResearcherPath = join(this.repositoryRoot, config.agents.directory, "forge-researcher.md");
+    const retiredResearcherPath = join(this.controlRoot, config.agents.directory, "forge-researcher.md");
     const retiredResearcher = await readOptional(retiredResearcherPath);
     if (retiredResearcher?.includes("You are a Forge repository researcher.")) {
       changes.push(changeFor(retiredResearcherPath, retiredResearcher, "", false, "Remove the retired generated Forge Researcher template"));
     }
     for (const template of await desiredAgentTemplates(this.packageRoot, config)) {
-      const targetPath = join(this.repositoryRoot, config.agents.directory, template.file);
+      const targetPath = join(this.controlRoot, config.agents.directory, template.file);
       const current = await readOptional(targetPath);
       const expectedCurrent = currentTemplates.get(template.file);
       const differs = current !== undefined && stableHash(current) !== stableHash(template.content);
@@ -100,10 +100,10 @@ export class ForgeConfigService {
       changes.push(changeFor(targetPath, current, template.content, locallyModified, retiredGeneratedDesigner ? "Replace the retired generated Tournament template with the Remediation Planner template" : undefined));
     }
 
-    const instructionPlans = await planManagedInstructions(this.repositoryRoot, currentConfig, config);
+    const instructionPlans = await planManagedInstructions(this.controlRoot, currentConfig, config);
     for (const plan of instructionPlans) changes.push(changeFor(plan.path, plan.current, plan.next, plan.conflict, plan.reason));
 
-    const subagentsPath = join(this.repositoryRoot, ".pi", "subagents.json");
+    const subagentsPath = join(this.controlRoot, ".pi", "subagents.json");
     const currentSubagents = await readOptional(subagentsPath);
     changes.push(changeFor(
       subagentsPath,
@@ -113,8 +113,9 @@ export class ForgeConfigService {
       "Keep default agents available, fail closed on unknown types, and use project Explore and Plan overrides",
     ));
 
-    if (config.artifacts.gitPolicy === "ignore") {
-      const gitignorePath = join(this.repositoryRoot, ".gitignore");
+    const controlGitMarker = join(this.controlRoot, ".git");
+    if (config.artifacts.gitPolicy === "ignore" && await exists(controlGitMarker)) {
+      const gitignorePath = join(this.controlRoot, ".gitignore");
       const current = await readOptional(gitignorePath) ?? "";
       const ignoreLine = `/${config.artifacts.root.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")}/`;
       const lines = current.split("\n").filter(Boolean);
@@ -133,19 +134,20 @@ export class ForgeConfigService {
         ...config.repositoryContext.adrDirectories,
         ...config.repositoryContext.supplementalInstructions,
       ])];
-      const missing = (await Promise.all(contextPaths.map(async (path) => ({ path, exists: await exists(join(this.repositoryRoot, path)) })))).filter((entry) => !entry.exists);
+      const missing = (await Promise.all(contextPaths.map(async (path) => ({ path, exists: await exists(join(this.controlRoot, path)) })))).filter((entry) => !entry.exists);
       if (missing.length > 0) warnings.push(`Repository Context paths do not exist: ${missing.map((entry) => entry.path).join(", ")}`);
       if (contextPaths.length === 0) warnings.push("No Repository Context sources were discovered; forge-prd will fall back to repository instructions and targeted code evidence.");
     }
+    if (config.artifacts.gitPolicy === "ignore" && !(await exists(controlGitMarker))) warnings.push("Control Root is not a Git Working Tree; Git ignore update is skipped.");
     if (changes.some((change) => change.action === "conflict")) warnings.push("One or more managed Forge files have local modifications and require path-specific overwrite approval.");
 
     const previewHash = stableHash({
-      repositoryRoot: this.repositoryRoot,
+      controlRoot: this.controlRoot,
       currentConfigHash: currentConfig ? stableHash(currentConfig) : null,
       config,
       changes: changes.map(({ path, action, currentHash, nextHash }) => ({ path, action, currentHash: currentHash ?? null, nextHash })),
     });
-    return { repositoryRoot: this.repositoryRoot, configPath: this.configPath, previewHash, config, changes, warnings };
+    return { controlRoot: this.controlRoot, configPath: this.configPath, previewHash, config, changes, warnings };
   }
 
   async apply(input: {
@@ -160,7 +162,7 @@ export class ForgeConfigService {
     const allowed = new Set([
       ...(input.overwriteTemplatePaths ?? []),
       ...(input.overwriteInstructionPaths ?? []),
-    ].map((path) => join(this.repositoryRoot, path)));
+    ].map((path) => join(this.controlRoot, path)));
     const unresolved = preview.changes.filter((change) => change.action === "conflict" && !allowed.has(change.path));
     if (unresolved.length > 0) throw new Error(`Forge init conflicts require approval: ${unresolved.map((change) => change.path).join(", ")}`);
 
@@ -170,24 +172,24 @@ export class ForgeConfigService {
     const desiredConfig = `${JSON.stringify(preview.config, null, 2)}\n`;
     await atomicWriteText(this.configPath, desiredConfig);
     changedFiles.push(this.configPath);
-    await atomicWriteJson(join(this.repositoryRoot, ".pi", "forge-generations", `forge-${preview.config.generation}.json`), preview.config);
+    await atomicWriteJson(join(this.controlRoot, ".pi", "forge-generations", `forge-${preview.config.generation}.json`), preview.config);
 
     for (const template of await desiredAgentTemplates(this.packageRoot, preview.config)) {
-      const targetPath = join(this.repositoryRoot, preview.config.agents.directory, template.file);
+      const targetPath = join(this.controlRoot, preview.config.agents.directory, template.file);
       const current = await readOptional(targetPath);
       if (current === undefined || stableHash(current) !== stableHash(template.content)) {
         await atomicWriteText(targetPath, template.content);
         changedFiles.push(targetPath);
       }
     }
-    const retiredResearcherPath = join(this.repositoryRoot, preview.config.agents.directory, "forge-researcher.md");
+    const retiredResearcherPath = join(this.controlRoot, preview.config.agents.directory, "forge-researcher.md");
     const retiredResearcher = await readOptional(retiredResearcherPath);
     if (retiredResearcher?.includes("You are a Forge repository researcher.")) {
       await rm(retiredResearcherPath);
       changedFiles.push(retiredResearcherPath);
     }
 
-    const instructionPlans = await planManagedInstructions(this.repositoryRoot, currentConfig, preview.config);
+    const instructionPlans = await planManagedInstructions(this.controlRoot, currentConfig, preview.config);
     for (const plan of instructionPlans) {
       if (plan.current === undefined || stableHash(plan.current) !== stableHash(plan.next)) {
         await atomicWriteText(plan.path, plan.next);
@@ -195,7 +197,7 @@ export class ForgeConfigService {
       }
     }
 
-    const subagentsPath = join(this.repositoryRoot, ".pi", "subagents.json");
+    const subagentsPath = join(this.controlRoot, ".pi", "subagents.json");
     const currentSubagents = await readOptional(subagentsPath);
     const desiredSubagents = strictSubagentsSettings(currentSubagents);
     if (currentSubagents === undefined || stableHash(currentSubagents) !== stableHash(desiredSubagents)) {
@@ -203,8 +205,8 @@ export class ForgeConfigService {
       changedFiles.push(subagentsPath);
     }
 
-    if (preview.config.artifacts.gitPolicy === "ignore") {
-      const gitignorePath = join(this.repositoryRoot, ".gitignore");
+    if (preview.config.artifacts.gitPolicy === "ignore" && await exists(join(this.controlRoot, ".git"))) {
+      const gitignorePath = join(this.controlRoot, ".gitignore");
       const current = await readOptional(gitignorePath) ?? "";
       const ignoreLine = `/${preview.config.artifacts.root.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")}/`;
       if (!current.split("\n").includes(ignoreLine)) {
@@ -222,7 +224,7 @@ export class ForgeConfigService {
       changedFiles,
       appliedAt: new Date().toISOString(),
     };
-    await atomicWriteJson(join(this.repositoryRoot, ".pi", "forge-receipts", `init-${receipt.generation}.json`), receipt);
+    await atomicWriteJson(join(this.controlRoot, ".pi", "forge-receipts", `init-${receipt.generation}.json`), receipt);
     return { preview, receipt };
   }
 
@@ -239,17 +241,17 @@ export class ForgeConfigService {
     if (!config) return { configured: false, templateStatus: [] };
     validateForgeConfig(config, availableModels);
     const templateStatus = await Promise.all((await desiredAgentTemplates(this.packageRoot, config)).map(async (template) => {
-      const targetPath = join(this.repositoryRoot, config.agents.directory, template.file);
+      const targetPath = join(this.controlRoot, config.agents.directory, template.file);
       const current = await readOptional(targetPath);
       return { path: targetPath, installed: current !== undefined, matches: current !== undefined && stableHash(current) === stableHash(template.content) };
     }));
     const instructions = config.instructions;
     const instructionStatus = instructions ? await (async () => {
-      const path = join(this.repositoryRoot, instructions.file);
+      const path = join(this.controlRoot, instructions.file);
       const current = await readOptional(path);
       return { path, installed: current !== undefined, matches: current?.includes(renderForgeInstructionBlock(config)) ?? false };
     })() : undefined;
-    const subagentsPath = join(this.repositoryRoot, ".pi", "subagents.json");
+    const subagentsPath = join(this.controlRoot, ".pi", "subagents.json");
     const subagentsContent = await readOptional(subagentsPath);
     const subagentsStatus = await (async () => {
       if (!subagentsContent) return { path: subagentsPath, strict: false };
@@ -268,7 +270,7 @@ export class ForgeConfigService {
         ...context.adrDirectories,
         ...context.supplementalInstructions,
       ])].sort();
-      const existence = await Promise.all(configuredPaths.map(async (path) => ({ path, exists: await exists(join(this.repositoryRoot, path)) })));
+      const existence = await Promise.all(configuredPaths.map(async (path) => ({ path, exists: await exists(join(this.controlRoot, path)) })));
       return { configuredPaths, missingPaths: existence.filter((entry) => !entry.exists).map((entry) => entry.path) };
     })() : undefined;
     return {

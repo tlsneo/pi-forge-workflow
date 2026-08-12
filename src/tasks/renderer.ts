@@ -22,6 +22,8 @@ ${contract.goal}
 - Acceptance: ${contract.acceptance.join(", ")}
 - Task Version: **V${String(version).padStart(3, "0")}**
 - Contract Hash: \`${contract.contractHash}\`
+- Target Repository: \`${issue.source.repositoryRoot}\`
+- Repository Revision: \`${issue.source.repositoryRevision}\`
 
 ## Exact Context
 

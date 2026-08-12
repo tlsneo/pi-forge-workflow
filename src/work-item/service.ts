@@ -117,9 +117,9 @@ export class WorkItemService {
     this.store = new WorkItemStore(root);
   }
 
-  async initialize(input: Omit<WorkItemManifest, "schemaVersion" | "createdAt">): Promise<WorkItemState> {
+  async initialize(input: Omit<WorkItemManifest, "schemaVersion" | "createdAt" | "controlRoot"> & { controlRoot?: string }): Promise<WorkItemState> {
     const now = new Date().toISOString();
-    const manifest: WorkItemManifest = { ...input, schemaVersion: 1, createdAt: now };
+    const manifest: WorkItemManifest = { ...input, controlRoot: input.controlRoot ?? input.repositoryRoot, schemaVersion: 1, createdAt: now };
     const state: WorkItemState = {
       schemaVersion: 1,
       workItemId: input.workItemId,
@@ -163,6 +163,7 @@ export class WorkItemService {
     const state = await successor.initialize({
       workItemId: input.successorWorkItemId,
       title: input.title?.trim() || manifest.title,
+      controlRoot: manifest.controlRoot,
       repositoryRoot: manifest.repositoryRoot,
       repositoryRevision: input.repositoryRevision,
       supersedes: {

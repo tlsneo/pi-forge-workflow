@@ -2,6 +2,7 @@ export * from "./renderer.js";
 export * from "./review-contracts.js";
 export * from "./review-prompts.js";
 export * from "./review-surfaces.js";
+export * from "./repositories.js";
 export * from "./service.js";
 export * from "./store.js";
 export * from "./types.js";

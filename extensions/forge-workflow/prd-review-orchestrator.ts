@@ -76,7 +76,7 @@ export class PrdReviewOrchestrator {
 
   async ensureReady(workItemRoot: string, ctx: ExtensionContext): Promise<void> {
     const manifest = await new WorkItemService(workItemRoot).store.readManifest();
-    const config = await loadForgeConfig(manifest.repositoryRoot);
+    const config = await loadForgeConfig(manifest.controlRoot);
     const reviewModels = new Set<string>();
     for (const axis of AXES) {
       const route = resolveForgeProfile(config, ROLE_BY_AXIS[axis]);
@@ -95,7 +95,7 @@ export class PrdReviewOrchestrator {
   async startRequiredReviews(workItemRoot: string, ctx: ExtensionContext): Promise<SpawnResult[]> {
     const service = new WorkItemService(workItemRoot);
     const manifest = await service.store.readManifest();
-    const config = await loadForgeConfig(manifest.repositoryRoot);
+    const config = await loadForgeConfig(manifest.controlRoot);
     const protocol = await this.adapter.ping();
     if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
     const verifierRoute = resolveForgeProfile(config, "blockerVerifier");
@@ -155,7 +155,7 @@ export class PrdReviewOrchestrator {
   async startBlockerVerification(workItemRoot: string, ctx: ExtensionContext): Promise<SpawnResult | undefined> {
     const service = new WorkItemService(workItemRoot);
     const manifest = await service.store.readManifest();
-    const config = await loadForgeConfig(manifest.repositoryRoot);
+    const config = await loadForgeConfig(manifest.controlRoot);
     const route = resolveForgeProfile(config, "blockerVerifier");
     const model = await resolveExactModel(ctx, route.model);
     this.verifierByWorkItem.set(workItemRoot, { model, route });

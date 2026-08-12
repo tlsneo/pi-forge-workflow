@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadForgeConfig } from "../../src/config/resolver.js";
 import { WorkItemService } from "../../src/work-item/service.js";
+import { discoverGitRepositories, resolveGitRepository } from "../../src/work-item/repositories.js";
 import type { DiscoveryCheckpoint, ForgePrd, PrdBlockerVerificationResult, PrdReview, ReviewAxis, ReviewVerdict } from "../../src/work-item/types.js";
 import type { PrdReviewOrchestrator } from "./prd-review-orchestrator.js";
 
@@ -122,13 +123,19 @@ function asObject<T>(value: unknown, label: string): T {
   return value as T;
 }
 
-async function repositoryRevision(pi: ExtensionAPI, cwd: string, signal?: AbortSignal): Promise<string> {
-  const result = await pi.exec("git", ["rev-parse", "HEAD"], { cwd, ...(signal ? { signal } : {}) });
-  if (result.code !== 0 || !result.stdout.trim()) throw new Error("forge-prd requires a Git repository with a committed revision");
-  return result.stdout.trim();
-}
 
 export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrchestrator): void {
+  pi.registerTool({
+    name: "forge_prd_repositories",
+    label: "Forge PRD Repositories",
+    description: "Discover selectable Git Working Trees under the Forge Control Root without classifying repository organization",
+    parameters: Type.Object({ maxDepth: Type.Optional(Type.Integer({ minimum: 0, maximum: 12 })) }),
+    async execute(_id, params, _signal, _update, ctx) {
+      const repositories = await discoverGitRepositories(ctx.cwd, params.maxDepth);
+      return text(JSON.stringify({ controlRoot: ctx.cwd, repositories }, null, 2), { controlRoot: ctx.cwd, repositories });
+    },
+  });
+
   pi.registerTool({
     name: "forge_prd_open",
     label: "Forge PRD Open",
@@ -137,12 +144,13 @@ export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrches
     parameters: Type.Object({
       workItemRoot: Type.Optional(WorkItemRoot),
       title: Type.Optional(Type.String()),
+      repositoryRoot: Type.Optional(Type.String({ description: "Target Git Working Tree, absolute or relative to the Forge Control Root" })),
     }),
-    async execute(_id, params, signal, _update, ctx) {
+    async execute(_id, params, _signal, _update, ctx) {
       let root: string;
       if (params.workItemRoot) {
         root = normalizeRoot(ctx.cwd, params.workItemRoot);
-        if (root === resolve(ctx.cwd)) throw new Error("The repository root cannot be used as a Work Item root; omit workItemRoot to create under .forge/work-items");
+        if (root === resolve(ctx.cwd)) throw new Error("The Control Root cannot be used as a Work Item root; omit workItemRoot to create under the configured artifact directory");
       } else {
         if (!params.title?.trim()) throw new Error("title is required when creating a Work Item");
         const config = await loadForgeConfig(ctx.cwd);
@@ -150,14 +158,31 @@ export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrches
       }
 
       const service = new WorkItemService(root);
+      if (await service.store.exists()) {
+        const manifest = await service.store.readManifest();
+        if (resolve(ctx.cwd) !== resolve(manifest.controlRoot)) throw new Error(`Resume this Work Item from its frozen Control Root: ${manifest.controlRoot}`);
+      }
       if (!(await service.store.exists())) {
         if (!params.title?.trim()) throw new Error("Work Item does not exist; title is required to initialize it");
+        let target = params.repositoryRoot?.trim();
+        const repositories = await discoverGitRepositories(ctx.cwd);
+        if (!target) {
+          if (repositories.length === 1) target = repositories[0]!.repositoryRoot;
+          else if (repositories.length === 0) throw new Error("No Git Working Tree was discovered under the Control Root; pass repositoryRoot explicitly");
+          else return text("Repository selection is required before creating the Work Item.", { controlRoot: ctx.cwd, repositories, needsRepositorySelection: true });
+        }
+        const repository = await resolveGitRepository(ctx.cwd, target);
         await service.initialize({
           workItemId: root.split("/").at(-1) ?? randomUUID(),
           title: params.title,
-          repositoryRoot: ctx.cwd,
-          repositoryRevision: await repositoryRevision(pi, ctx.cwd, signal),
+          controlRoot: ctx.cwd,
+          repositoryRoot: repository.repositoryRoot,
+          repositoryRevision: repository.revision,
         });
+      } else if (params.repositoryRoot?.trim()) {
+        const manifest = await service.store.readManifest();
+        const asserted = await resolveGitRepository(manifest.controlRoot, params.repositoryRoot);
+        if (asserted.repositoryRoot !== manifest.repositoryRoot) throw new Error("Existing Work Item Target Repository is immutable");
       }
       const opened = await service.open();
       await orchestrator.index(root);
@@ -176,17 +201,19 @@ export function registerPrdTools(pi: ExtensionAPI, orchestrator: PrdReviewOrches
       authorizedBy: Type.String(),
       authorizationEvidence: Type.String(),
     }),
-    async execute(_id, params, signal, _update, ctx) {
+    async execute(_id, params, _signal, _update, ctx) {
       const predecessorRoot = normalizeRoot(ctx.cwd, params.workItemRoot);
-      const config = await loadForgeConfig(ctx.cwd);
-      const title = params.title?.trim() || (await new WorkItemService(predecessorRoot).store.readManifest()).title;
+      const predecessorManifest = await new WorkItemService(predecessorRoot).store.readManifest();
+      if (resolve(ctx.cwd) !== resolve(predecessorManifest.controlRoot)) throw new Error(`Run forge-prd from the frozen Control Root: ${predecessorManifest.controlRoot}`);
+      const config = await loadForgeConfig(predecessorManifest.controlRoot);
+      const title = params.title?.trim() || predecessorManifest.title;
       const successorId = `${slugify(title)}-${randomUUID().slice(0, 8)}`;
-      const successorRoot = join(ctx.cwd, config.artifacts.root, "work-items", successorId);
+      const successorRoot = join(predecessorManifest.controlRoot, config.artifacts.root, "work-items", successorId);
       const created = await new WorkItemService(predecessorRoot).createSuccessor({
         successorRoot,
         successorWorkItemId: successorId,
         title,
-        repositoryRevision: await repositoryRevision(pi, ctx.cwd, signal),
+        repositoryRevision: (await resolveGitRepository(predecessorManifest.controlRoot, predecessorManifest.repositoryRoot)).revision,
         reason: params.reason,
         authorizedBy: params.authorizedBy,
         authorizationEvidence: params.authorizationEvidence,

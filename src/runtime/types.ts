@@ -85,6 +85,8 @@ export interface RuntimeManifest {
   issueId: string;
   issueHash: string;
   dagHash: string;
+  controlRoot: string;
+  repositoryRoot: string;
   workspaceRoot: string;
   workspaceMode: "shared-serial";
   issueModelProfile?: string;

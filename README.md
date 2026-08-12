@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 A tag or commit may be pinned:
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.2.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.3.0
 ```
 
 ### Install from a local checkout
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 For project-local Pi installation, add `-l` to `pi install`.
 
-> This repository currently has `"private": true` and version `0.2.0`, so the documented distribution path is Git or a local checkout, not npm publication.
+> This repository currently has `"private": true` and version `0.3.0`, so the documented distribution path is Git or a local checkout, not npm publication.
 
 ## Public workflow
 
@@ -69,10 +69,26 @@ The planning hierarchy is fixed:
 PRD → Delivery Boundary → Issue → Vertical Slice → Micro Task
 ```
 
+Forge separates its **Control Root** from the **Target Repository**. The Control Root owns `.pi` configuration and `.forge` artifacts and may be a non-Git multi-repository workspace. Each Work Item selects and freezes one Git Working Tree; Issue, Task, Worker, verification, Audit, commit, and rollback inherit that repository. Single-repository projects continue to work with both roots equal.
+
 - **PRD** defines the complete problem, behavior, Acceptance, evidence, architecture decisions, and delivery boundaries.
 - **Issue** materializes exactly one frozen delivery boundary.
 - **Slice** proves an observable subset of Issue Acceptance through an authoritative gate.
 - **Micro Task** is one small, independently executable and verifiable edit package.
+
+### Multi-repository Control Workspaces
+
+A Control Root may be a plain directory containing several independent Git repositories:
+
+```text
+workspace/                 # no .git required
+├── .pi/
+├── .forge/
+├── subproject1/.git/
+└── subproject2/.git/
+```
+
+Start Pi from `workspace`, run `forge-prd`, and select a Target Repository from `forge_prd_repositories` when more than one is found. Forge asks Git for the canonical top-level Working Tree, so the same path-based mechanism supports single repositories, monorepo subdirectories, nested repositories, submodules, and linked worktrees without layout-specific Runtime branches. The selected Repository is frozen on the Work Item and inherited by Issues and Tasks; the current release keeps one Work Item in one Git repository.
 
 ## Architecture
 

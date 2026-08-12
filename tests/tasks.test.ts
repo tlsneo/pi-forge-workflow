@@ -7,6 +7,7 @@ import type { ForgeConfig } from "../src/config/types.js";
 import { TaskPreflightOrchestrator } from "../extensions/forge-workflow/task-preflight-orchestrator.js";
 import { IssuesService } from "../src/issues/service.js";
 import { RuntimeService } from "../src/runtime/service.js";
+import { stableHash } from "../src/runtime/hash.js";
 import { PiSubagentsAdapter, type EventBus } from "../src/subagents/adapter.js";
 import { TaskPreflightService } from "../src/tasks/preflight-service.js";
 import { buildTaskPreflightPrompt } from "../src/tasks/preflight-prompt.js";
@@ -149,6 +150,24 @@ describe("TasksService", () => {
     expect(taskMarkdown).toContain("Fallback is default-deny");
     expect(taskMarkdown).toContain("Keep composition roots and app entry modules thin");
     expect(JSON.parse(await readFile(join(result.manifest.runtimeRoot, "dag.json"), "utf8")).tasks[0].contractHash).not.toBe("pending");
+  });
+
+  it("normalizes legacy Issue repository identity only when Tasks read the Artifact", async () => {
+    const { workItemRoot, tasks } = await fixture();
+    const issuePath = join(workItemRoot, "issues", "I001", "issue.json");
+    const issue = JSON.parse(await readFile(issuePath, "utf8"));
+    delete issue.source.controlRoot;
+    delete issue.source.repositoryRoot;
+    delete issue.source.repositoryRevision;
+    const { artifactHash: _hash, ...base } = issue;
+    issue.artifactHash = stableHash(base);
+    await writeFile(issuePath, JSON.stringify(issue, null, 2));
+    const manifestPath = join(workItemRoot, "issues", "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.issues[0].artifactHash = issue.artifactHash;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+    const prepared = await tasks.prepare("I001", plan().slices, plan().tasks);
+    expect(prepared.issue.source.controlRoot).toBe((await new WorkItemService(workItemRoot).store.readManifest()).controlRoot);
   });
 
   it("requires a Binding-bound Task Preflight pass before the public orchestration freezes a Plan", async () => {

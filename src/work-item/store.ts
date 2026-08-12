@@ -85,7 +85,8 @@ export class WorkItemStore {
   }
 
   async readManifest(): Promise<WorkItemManifest> {
-    return JSON.parse(await readFile(this.manifestPath, "utf8")) as WorkItemManifest;
+    const raw = JSON.parse(await readFile(this.manifestPath, "utf8")) as WorkItemManifest & { controlRoot?: string };
+    return raw.controlRoot ? raw : { ...raw, controlRoot: raw.repositoryRoot };
   }
 
   async readState(): Promise<WorkItemState> {

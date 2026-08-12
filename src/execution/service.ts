@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { realpath, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { RuntimeService } from "../runtime/service.js";
 import type { TaskContract } from "../runtime/types.js";
@@ -49,8 +49,24 @@ export class TaskExecutionService {
     this.runtime = new RuntimeService(runtimeRoot);
   }
 
+  private async requireFrozenGitRoot(): Promise<void> {
+    const manifest = await this.runtime.store.readManifest();
+    const topLevel = await git(manifest.workspaceRoot, ["rev-parse", "--show-toplevel"]);
+    if (topLevel.exitCode !== 0 || !topLevel.stdout.trim()) throw new Error("Forge execution requires a Git Working Tree");
+    const actualRoot = await realpath(resolve(topLevel.stdout.trim()));
+    const repositoryRoot = await realpath(resolve(manifest.repositoryRoot));
+    const workspaceRoot = await realpath(resolve(manifest.workspaceRoot));
+    if (actualRoot !== repositoryRoot) {
+      throw new Error(`Execution Git Root ${actualRoot} does not match frozen Repository Root ${repositoryRoot}`);
+    }
+    if (workspaceRoot !== actualRoot) {
+      throw new Error(`The current shared-serial release requires workspaceRoot to equal repositoryRoot: ${workspaceRoot}`);
+    }
+  }
+
   async requireCleanWorkspace(): Promise<string> {
     const manifest = await this.runtime.store.readManifest();
+    await this.requireFrozenGitRoot();
     const status = await git(manifest.workspaceRoot, ["status", "--porcelain"]);
     if (status.exitCode !== 0) throw new Error(output(status.stdout, status.stderr) ?? "git status failed");
     if (status.stdout.trim()) throw new Error("forge-run requires a clean Git workspace before claiming the next Task");
@@ -60,6 +76,7 @@ export class TaskExecutionService {
   }
 
   async prepareRetry(taskId: string, maxAttempts = 2): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; retried: boolean }> {
+    await this.requireFrozenGitRoot();
     const state = await this.runtime.status();
     const task = state.tasks[taskId];
     const recoverableStatus = task && (["retry_ready", "interrupted"].includes(task.status)
@@ -80,6 +97,7 @@ export class TaskExecutionService {
   }
 
   async finalizeTask(taskId: string, maxAttempts = 2): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; commit?: string; retried: boolean }> {
+    await this.requireFrozenGitRoot();
     const state = await this.runtime.status();
     const task = state.tasks[taskId];
     if (!task?.binding || !task.handoff) throw new Error(`${taskId} has no bound Handoff`);
@@ -126,6 +144,7 @@ export class TaskExecutionService {
   }
 
   async runReadySliceGates(): Promise<Awaited<ReturnType<RuntimeService["status"]>>> {
+    await this.requireFrozenGitRoot();
     let state = await this.runtime.status();
     const manifest = await this.runtime.store.readManifest();
     const dag = await this.runtime.store.readDag();

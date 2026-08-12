@@ -77,8 +77,10 @@ export interface AvailableModel {
 }
 
 export interface RepositoryScan {
-  repositoryRoot: string;
-  repositoryRevision: string;
+  controlRoot: string;
+  repositoryRoot?: string;
+  repositoryRevision?: string;
+  controlRootIsGit: boolean;
   remotes: Array<{ name: string; url: string }>;
   inferredTracker: TrackerMode;
   packageManager: "npm" | "pnpm" | "yarn" | "bun" | "unknown";
@@ -112,7 +114,7 @@ export interface ConfigFileChange {
 }
 
 export interface ForgeInitPreview {
-  repositoryRoot: string;
+  controlRoot: string;
   configPath: string;
   previewHash: string;
   config: ForgeConfig;

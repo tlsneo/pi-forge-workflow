@@ -76,6 +76,7 @@ export interface TaskPreflightProposal {
   surfaceHash: string;
   source: {
     workItemId: string;
+    controlRoot?: string;
     prdHash: string;
     issuesHash: string;
     issueHash: string;

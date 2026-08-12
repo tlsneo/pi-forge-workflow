@@ -52,7 +52,7 @@ export class AuditRemediationOrchestrator {
   async startVerifier(runtimeRoot: string, ctx: ExtensionContext) {
     const runtime = new RuntimeService(runtimeRoot);
     const manifest = await runtime.store.readManifest();
-    const config = await loadForgeConfig(manifest.workspaceRoot);
+    const config = await loadForgeConfig(manifest.controlRoot);
     const route = resolveForgeProfile(config, "blockerVerifier");
     const model = await resolveExactModel(ctx, route.model);
     const protocol = await this.adapter.ping();
@@ -78,7 +78,8 @@ export class AuditRemediationOrchestrator {
       "Role: independent Forge final Audit Blocker Verifier",
       `Binding ID: ${binding.id}`,
       `Runtime root: ${runtimeRoot}`,
-      `Repository root: ${manifest.workspaceRoot}`,
+      `Control root: ${manifest.controlRoot}`,
+      `Target repository root: ${manifest.workspaceRoot}`,
       `Finding hash: ${job.findingHash}`,
       "",
       "Verify only the listed Blockers against the final committed code and frozen Issue evidence. Do not widen scope or modify files.",
@@ -111,7 +112,7 @@ export class AuditRemediationOrchestrator {
   async startPlanner(runtimeRoot: string, ctx: ExtensionContext) {
     const runtime = new RuntimeService(runtimeRoot);
     const manifest = await runtime.store.readManifest();
-    const config = await loadForgeConfig(manifest.workspaceRoot);
+    const config = await loadForgeConfig(manifest.controlRoot);
     const route = resolveForgeProfile(config, config.models.routing.remediationPlanner ? "remediationPlanner" : "task.complex");
     const model = await resolveExactModel(ctx, route.model);
     let state = await runtime.status();
@@ -133,7 +134,8 @@ export class AuditRemediationOrchestrator {
       "Role: Forge Remediation Task Planner",
       `Binding ID: ${binding.id}`,
       `Runtime root: ${runtimeRoot}`,
-      `Repository root: ${manifest.workspaceRoot}`,
+      `Control root: ${manifest.controlRoot}`,
+      `Target repository root: ${manifest.workspaceRoot}`,
       `Frozen PRD: ${new RemediationService(runtimeRoot).workItemRoot}/PRD.md`,
       `Frozen Issue: ${new RemediationService(runtimeRoot).issueRoot}/ISSUE.md`,
       `Issue artifact: ${new RemediationService(runtimeRoot).issueRoot}/issue.json`,

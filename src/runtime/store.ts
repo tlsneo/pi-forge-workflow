@@ -107,14 +107,22 @@ export class RuntimeStore {
   }
 
   async readManifest(): Promise<RuntimeManifest> {
-    const raw = JSON.parse(await readFile(this.manifestPath, "utf8")) as RuntimeManifest & { workItemId?: string };
-    if (raw.workItemId) return raw;
+    const raw = JSON.parse(await readFile(this.manifestPath, "utf8")) as RuntimeManifest & {
+      workItemId?: string;
+      controlRoot?: string;
+      repositoryRoot?: string;
+    };
     const workItemManifestPath = join(this.root, "..", "..", "..", "runtime", "manifest.json");
+    let workItem: { workItemId?: string; controlRoot?: string; repositoryRoot?: string } | undefined;
     if (await pathExists(workItemManifestPath)) {
-      const workItem = JSON.parse(await readFile(workItemManifestPath, "utf8")) as { workItemId?: string };
-      if (workItem.workItemId) return { ...raw, workItemId: workItem.workItemId };
+      workItem = JSON.parse(await readFile(workItemManifestPath, "utf8")) as typeof workItem;
     }
-    return { ...raw, workItemId: `legacy:${raw.issueId}` };
+    return {
+      ...raw,
+      workItemId: raw.workItemId ?? workItem?.workItemId ?? `legacy:${raw.issueId}`,
+      controlRoot: raw.controlRoot ?? workItem?.controlRoot ?? workItem?.repositoryRoot ?? raw.workspaceRoot,
+      repositoryRoot: raw.repositoryRoot ?? workItem?.repositoryRoot ?? raw.workspaceRoot,
+    };
   }
 
   async readDag(): Promise<TaskDag> {

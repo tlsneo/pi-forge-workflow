@@ -28,8 +28,12 @@ export class IssuesService {
       throw new Error("Frozen PRD Receipt does not match the active PRD Generation");
     }
     const traceability = validateIssueDrafts(prdGeneration.prd, drafts);
+    const workItemManifest = await this.workItem.store.readManifest();
     const source = {
       workItemId: current.workItemId,
+      controlRoot: workItemManifest.controlRoot,
+      repositoryRoot: workItemManifest.repositoryRoot,
+      repositoryRevision: workItemManifest.repositoryRevision,
       prdGeneration: prdGeneration.generation,
       prdHash: prdGeneration.contentHash,
     };

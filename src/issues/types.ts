@@ -25,6 +25,9 @@ export interface IssueArtifact extends IssueDraft {
   schemaVersion: 1;
   source: {
     workItemId: string;
+    controlRoot: string;
+    repositoryRoot: string;
+    repositoryRevision: string;
     prdGeneration: number;
     prdHash: string;
   };

@@ -32,6 +32,7 @@ export interface MicroTaskDraft {
 
 export interface PreparedTaskPlan {
   issue: IssueArtifact;
+  controlRoot: string;
   repositoryRoot: string;
   repositoryRevision: string;
   config: ForgeConfig;

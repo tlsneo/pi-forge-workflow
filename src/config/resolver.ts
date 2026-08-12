@@ -12,14 +12,14 @@ export interface ResolvedForgeProfile extends ModelProfile {
   configHash: string;
 }
 
-export async function loadForgeConfig(repositoryRoot: string): Promise<ForgeConfig> {
-  const path = join(repositoryRoot, ".pi", "forge.json");
+export async function loadForgeConfig(controlRoot: string): Promise<ForgeConfig> {
+  const path = join(controlRoot, ".pi", "forge.json");
   let raw: ForgeConfig & { tournament?: unknown };
   try {
     raw = JSON.parse(await readFile(path, "utf8")) as ForgeConfig & { tournament?: unknown };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(`Forge is not configured for ${repositoryRoot}; run /skill:forge-init`);
+      throw new Error(`Forge is not configured for ${controlRoot}; run /skill:forge-init`);
     }
     throw error;
   }

@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 也可以固定 Tag 或 Commit：
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.2.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.3.0
 ```
 
 ### 从本地 Checkout 安装
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 如果希望只安装到当前项目，给 `pi install` 增加 `-l`。
 
-> 当前 `package.json` 仍是 `"private": true` 和版本 `0.2.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
+> 当前 `package.json` 仍是 `"private": true` 和版本 `0.3.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
 
 ## 公开工作流
 
@@ -69,10 +69,26 @@ pi install /absolute/path/to/pi-forge-workflow
 PRD → Delivery Boundary → Issue → Vertical Slice → Micro Task
 ```
 
+Forge 将 **Control Root** 与 **Target Repository** 分离。Control Root 保存 `.pi` 配置和 `.forge` Artifact，可以是没有 Git 的多仓库 Workspace；每个 Work Item 选择并冻结一个 Git Working Tree，Issue、Task、Worker、Verification、Audit、Commit 和 Rollback 全部继承该仓库。单仓库项目继续使用两个 Root 相同的退化形式。
+
 - **PRD**：定义完整问题、行为、Acceptance、仓库证据、架构决策和交付边界。
 - **Issue**：精确物化一个已经冻结的 Delivery Boundary。
 - **Slice**：通过权威 Gate 证明一组可观察的 Issue Acceptance。
 - **Micro Task**：一个小型、可独立执行和验证的代码修改包。
+
+### 多仓库 Control Workspace
+
+Control Root 可以是包含多个独立 Git Repository 的普通目录：
+
+```text
+workspace/                 # 不要求 .git
+├── .pi/
+├── .forge/
+├── subproject1/.git/
+└── subproject2/.git/
+```
+
+从 `workspace` 启动 Pi，运行 `forge-prd`；发现多个 Repository 时，从 `forge_prd_repositories` 返回的列表中选择 Target Repository。Forge 只让 Git 解析规范 Top-level Working Tree，因此单仓库、Monorepo 子目录、嵌套独立 Repo、Submodule 和 linked Worktree 都使用同一套路径机制，不进入不同 Runtime 分支。选择结果冻结在 Work Item，并由 Issue 和 Task 继承；当前版本保持一个 Work Item 只操作一个 Git Repository。
 
 ## 设计架构
 

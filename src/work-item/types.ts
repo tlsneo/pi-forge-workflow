@@ -312,6 +312,7 @@ export interface WorkItemManifest {
   schemaVersion: 1;
   workItemId: string;
   title: string;
+  controlRoot: string;
   repositoryRoot: string;
   repositoryRevision: string;
   supersedes?: WorkItemSupersession;

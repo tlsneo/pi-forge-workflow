@@ -9,7 +9,7 @@ import { atomicWriteJson, atomicWriteText } from "../runtime/store.js";
 import { renderTask } from "./renderer.js";
 import { TaskPreflightService } from "./preflight-service.js";
 import type { TaskPreflightProposal, TaskPreflightRoute } from "./preflight-types.js";
-import type { IssueArtifact } from "../issues/types.js";
+import { normalizeIssueArtifactIdentity, type LegacyIssueArtifact } from "../issues/identity.js";
 import { WorkItemService } from "../work-item/service.js";
 import type { PrdGeneration } from "../work-item/types.js";
 import type { MicroTaskDraft } from "./types.js";
@@ -45,8 +45,9 @@ export class RemediationService {
         })();
     const dag = await this.runtime.store.readDag();
     const manifest = await this.runtime.store.readManifest();
-    const config = await loadForgeConfig(manifest.workspaceRoot);
-    const issue = JSON.parse(await readFile(join(this.issueRoot, "issue.json"), "utf8")) as IssueArtifact;
+    const config = await loadForgeConfig(manifest.controlRoot);
+    const workItemManifest = await new WorkItemService(this.workItemRoot).store.readManifest();
+    const issue = normalizeIssueArtifactIdentity(JSON.parse(await readFile(join(this.issueRoot, "issue.json"), "utf8")) as LegacyIssueArtifact, workItemManifest);
     const prdGeneration = JSON.parse(await readFile(join(this.workItemRoot, "prd", "generations", `prd-${issue.source.prdGeneration}.json`), "utf8")) as PrdGeneration;
     if (issue.artifactHash !== manifest.issueHash || issue.source.prdHash !== prdGeneration.contentHash) throw new Error("Remediation source Issue or PRD is stale");
     const issueAcceptance = new Set(issue.acceptanceIds);
@@ -94,7 +95,8 @@ export class RemediationService {
       proposalHash,
       surfaceHash,
       source: {
-        workItemId: (await new WorkItemService(this.workItemRoot).store.readManifest()).workItemId,
+        workItemId: workItemManifest.workItemId,
+        controlRoot: manifest.controlRoot,
         prdHash: prdGeneration.contentHash,
         issuesHash: stableHash({ issueId: issue.id, issueHash: issue.artifactHash }),
         issueHash: manifest.issueHash,
@@ -123,7 +125,8 @@ export class RemediationService {
     const proposal = await preflight.readProposal();
     if (!preflightState || preflightState.status !== "passed" || preflightState.job.result?.verdict !== "passed" || proposal.kind !== "remediation") throw new Error("Remediation Task Preflight has not passed");
     if (proposal.sourceFindingHash !== plan.findingHash || proposal.runtimeRoot !== this.runtimeRoot) throw new Error("Remediation Proposal is stale");
-    const issue = JSON.parse(await readFile(join(this.issueRoot, "issue.json"), "utf8")) as IssueArtifact;
+    const workItemManifest = await new WorkItemService(this.workItemRoot).store.readManifest();
+    const issue = normalizeIssueArtifactIdentity(JSON.parse(await readFile(join(this.issueRoot, "issue.json"), "utf8")) as LegacyIssueArtifact, workItemManifest);
     const prdGeneration = JSON.parse(await readFile(join(this.workItemRoot, "prd", "generations", `prd-${issue.source.prdGeneration}.json`), "utf8")) as PrdGeneration;
     if (proposal.sourceIssueHash !== issue.artifactHash || proposal.sourcePrdHash !== prdGeneration.contentHash || issue.source.prdHash !== prdGeneration.contentHash) throw new Error("Remediation Proposal no longer matches frozen Issue and PRD");
     if (stableHash(proposal.acceptanceIds ?? []) !== stableHash(issue.acceptanceIds) || stableHash(proposal.decisionIds ?? []) !== stableHash(issue.decisionIds)) throw new Error("Remediation Proposal changed frozen Acceptance or Decisions");
@@ -137,7 +140,7 @@ export class RemediationService {
           return verifier.findings.filter((finding) => confirmedIds.has(finding.findingId)).map((finding) => finding.finding);
         })();
     const manifest = await this.runtime.store.readManifest();
-    const config = await loadForgeConfig(manifest.workspaceRoot);
+    const config = await loadForgeConfig(manifest.controlRoot);
     const tasks = validateRemediationDrafts({ currentDag: dag, drafts: proposal.tasks, confirmedFindings, knownSliceIds: new Set(Object.keys(state.sliceGates ?? {})), modelProfiles: new Set(Object.keys(config.models.profiles)) });
     await this.runtime.store.transact("remediation_ready", (next) => {
       if (!next.remediationPlan || next.remediationPlan.findingHash !== plan.findingHash) throw new Error("Remediation Plan changed before apply");

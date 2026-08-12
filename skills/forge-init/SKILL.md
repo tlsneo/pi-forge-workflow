@@ -10,7 +10,7 @@ Configure Forge once per repository. This is a prompt-driven setup over determin
 
 ## 1. Scan
 
-Call `forge_init_scan`. Summarize what exists and what is missing: Git remote, tracker CLI/auth, Package Manager, scripts, monorepo signals, instructions, Agent directories, prior artifact directories, available models, and pi-subagents protocol.
+Call `forge_init_scan` for the current Forge Control Workspace. The Control Root owns `.pi` and `.forge` and may be a normal directory rather than a Git repository. Summarize what exists and what is missing: optional Control Root Git metadata, tracker CLI/auth, Package Manager, scripts, monorepo signals, instructions, Agent directories, prior artifact directories, available models, and pi-subagents protocol.
 
 Facts are not questions. Do not ask for information the scan already settled.
 
@@ -46,7 +46,7 @@ Call `forge_init_preview`. Show:
 - strict pi-subagents settings and preserved unrelated values;
 - the selected Repository Context sources and any missing paths;
 - the managed Forge block in Pi's selected repository instruction file;
-- `.gitignore` change;
+- `.gitignore` change when the Control Root itself is a Git Working Tree, or the explicit warning that no Git ignore update is needed;
 - warnings;
 - exact model routing;
 - preview hash.

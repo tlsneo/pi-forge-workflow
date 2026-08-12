@@ -66,6 +66,7 @@ function config(overrides: Partial<ForgeConfig> = {}): ForgeConfig {
 async function createService() {
   const root = await mkdtemp(join(tmpdir(), "pi-forge-init-"));
   roots.push(root);
+  await mkdir(join(root, ".git"), { recursive: true });
   await writeFile(join(root, ".gitignore"), "node_modules/\n");
   return { root, service: new ForgeConfigService(root, packageRoot) };
 }
@@ -95,6 +96,18 @@ describe("ForgeConfigService", () => {
     expect(status.templateStatus.every((template) => template.matches)).toBe(true);
     expect(status.instructionStatus?.matches).toBe(true);
     expect(status.subagentsStatus?.strict).toBe(true);
+  });
+
+  it("initializes a non-Git Control Workspace and skips Git ignore mutation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-forge-control-"));
+    roots.push(root);
+    const service = new ForgeConfigService(root, packageRoot);
+    const preview = await service.preview(config(), models);
+    expect(preview.warnings).toContain("Control Root is not a Git Working Tree; Git ignore update is skipped.");
+    expect(preview.changes.some((change) => change.path.endsWith(".gitignore"))).toBe(false);
+    await service.apply({ config: config(), expectedPreviewHash: preview.previewHash, availableModels: models });
+    expect(await readFile(join(root, ".pi", "forge.json"), "utf8")).toContain('"root": ".forge"');
+    await expect(readFile(join(root, ".gitignore"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("preserves unrelated pi-subagents settings while enforcing Forge strict dispatch", async () => {

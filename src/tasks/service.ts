@@ -3,6 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadForgeConfig } from "../config/resolver.js";
 import type { IssueArtifact } from "../issues/types.js";
+import { normalizeIssueArtifactIdentity, type LegacyIssueArtifact } from "../issues/identity.js";
 import { stableHash } from "../runtime/hash.js";
 import { RuntimeService } from "../runtime/service.js";
 import { atomicWriteJson, atomicWriteText } from "../runtime/store.js";
@@ -62,12 +63,16 @@ export class TasksService {
     const entry = issuesManifest.issues.find((candidate) => candidate.id === issueId);
     if (!entry) throw new Error(`Issue ${issueId} is not present in issues/manifest.json`);
     const issuePath = join(this.workItemRoot, entry.artifactPath);
-    const issue = JSON.parse(await readFile(issuePath, "utf8")) as IssueArtifact;
-    const { artifactHash: _artifactHash, ...artifactBase } = issue;
-    if (stableHash(artifactBase) !== issue.artifactHash || entry.artifactHash !== issue.artifactHash) throw new Error(`Issue ${issueId} Artifact Hash is stale`);
+    const rawIssue = JSON.parse(await readFile(issuePath, "utf8")) as LegacyIssueArtifact;
+    const { artifactHash: _artifactHash, ...artifactBase } = rawIssue;
+    if (stableHash(artifactBase) !== rawIssue.artifactHash || entry.artifactHash !== rawIssue.artifactHash) throw new Error(`Issue ${issueId} Artifact Hash is stale`);
 
     const repositoryManifest = await workItem.store.readManifest();
-    const config = await loadForgeConfig(repositoryManifest.repositoryRoot);
+    const issue: IssueArtifact = normalizeIssueArtifactIdentity(rawIssue, repositoryManifest);
+    if (issue.source.controlRoot !== repositoryManifest.controlRoot || issue.source.repositoryRoot !== repositoryManifest.repositoryRoot || issue.source.repositoryRevision !== repositoryManifest.repositoryRevision) {
+      throw new Error(`Issue ${issueId} Target Repository identity is stale`);
+    }
+    const config = await loadForgeConfig(repositoryManifest.controlRoot);
     const draftDag = validateTaskPlan(issue, config, slices, drafts);
     const contracts: TaskContract[] = draftDag.tasks.map((task) => {
       const { contractHash: _pending, ...base } = task;
@@ -89,6 +94,7 @@ export class TasksService {
     const proposalHash = stableHash({ source: semanticSource, slices, tasks: contracts });
     return {
       issue,
+      controlRoot: repositoryManifest.controlRoot,
       repositoryRoot: repositoryManifest.repositoryRoot,
       repositoryRevision: repositoryManifest.repositoryRevision,
       config,
@@ -108,7 +114,7 @@ export class TasksService {
     idempotent: boolean;
   }> {
     const prepared = await this.prepare(issueId, slices, drafts);
-    const { issue, repositoryRoot, config, source, semanticSource, proposalHash, contracts, dag } = prepared;
+    const { issue, controlRoot, repositoryRoot, config, source, semanticSource, proposalHash, contracts, dag } = prepared;
     const contentHash = proposalHash;
     const issueRoot = this.issueRoot(issueId);
     const runtimeRoot = join(issueRoot, "runtime");
@@ -177,6 +183,8 @@ export class TasksService {
         workItemId: semanticSource.workItemId,
         issueId,
         issueHash: issue.artifactHash,
+        controlRoot,
+        repositoryRoot,
         workspaceRoot: repositoryRoot,
         workspaceMode: config.workspace.mode,
         modelPolicy: this.modelPolicy(config),
@@ -196,7 +204,7 @@ export class TasksService {
     if (!(await exists(join(issueRoot, "task-manifest.json")))) throw new Error(`Task Plan does not exist for ${issueId}`);
     const workItem = new WorkItemService(this.workItemRoot);
     const repositoryManifest = await workItem.store.readManifest();
-    const config = await loadForgeConfig(repositoryManifest.repositoryRoot);
+    const config = await loadForgeConfig(repositoryManifest.controlRoot);
     const runtimeService = new RuntimeService(join(issueRoot, "runtime"));
     const result = await runtimeService.rebindModelPolicy({
       configGeneration: config.generation,

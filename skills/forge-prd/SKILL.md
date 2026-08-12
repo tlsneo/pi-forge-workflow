@@ -8,13 +8,17 @@ disable-model-invocation: true
 
 Convert the conversation into one frozen planning artifact. Preserve answered decisions; interview only the open frontier. Before submitting structured data, read [the tool contracts](references/contracts.md).
 
-## 1. Open the Work Item
+## 1. Select the Target Repository and open the Work Item
 
-Call `forge_prd_open`. To create, omit `workItemRoot` and pass a short stable title; to resume, pass the exact returned Work Item root. Read `.pi/forge.json`; from `repositoryContext`, load every entry point and only the ADR, architecture, or supplemental sources applicable to this change. Treat these sources as repository evidence and carry applicable constraints into Decisions, Non-goals, Risks, and Task-facing Acceptance behavior.
+The current Pi directory is the Forge **Control Root**: it owns `.pi/forge.json`, Agent templates, and `.forge` artifacts, and it does not need to be a Git repository. Each Work Item freezes exactly one Target Git Working Tree. Single-repository projects are the degenerate case where Control Root and Target Repository are equal.
 
-If `repositoryContext` is absent, fall back to repository instructions and discover relevant Context, ADR, glossary, and architecture material before drafting.
+Call `forge_prd_repositories` when the Control Root contains more than one candidate repository, then ask the user to select one path. Forge does not classify the layout as monorepo, nested repository, submodule, or worktree; Git resolves the selected directory to its canonical top-level Working Tree. To create, call `forge_prd_open` without `workItemRoot`, pass a short stable title, and pass `repositoryRoot` when selection is required. With exactly one discovered repository Forge may select it automatically. To resume, pass the exact returned Work Item root; the frozen Target Repository cannot change.
 
-Completion criterion: Runtime identity, repository revision, current state, next action, and applicable repository constraints are known.
+Read `.pi/forge.json` from the Control Root. From `repositoryContext`, load applicable Control Workspace constraints, then investigate product code only in the frozen Target Repository. All Evidence paths, Task Reads/Writes, Handoffs, and Receipts are relative to that Repository root. One Work Item cannot span multiple Git repositories in the current release.
+
+If `repositoryContext` is absent, fall back to Control Root instructions and discover relevant Context, ADR, glossary, and architecture material before drafting.
+
+Completion criterion: Control Root, Target Repository root and revision, Runtime identity, current state, next action, and applicable constraints are known.
 
 ## 2. Map repository evidence and build the decision tree
 

@@ -44,7 +44,10 @@ export class RuntimeService {
   }
 
   async initialize(
-    manifestInput: Omit<RuntimeManifest, "schemaVersion" | "dagHash" | "createdAt">,
+    manifestInput: Omit<RuntimeManifest, "schemaVersion" | "dagHash" | "createdAt" | "controlRoot" | "repositoryRoot"> & {
+      controlRoot?: string;
+      repositoryRoot?: string;
+    },
     dag: TaskDag,
     slices: Array<{ id: string; gate: Array<{ command: string; timeoutMs: number; proves: string }> }> = [],
   ): Promise<void> {
@@ -83,6 +86,8 @@ export class RuntimeService {
     };
     const manifest: RuntimeManifest = {
       ...manifestInput,
+      controlRoot: manifestInput.controlRoot ?? manifestInput.repositoryRoot ?? manifestInput.workspaceRoot,
+      repositoryRoot: manifestInput.repositoryRoot ?? manifestInput.workspaceRoot,
       schemaVersion: 1,
       dagHash: stableHash(dag),
       createdAt: now,

@@ -138,6 +138,7 @@ export class TaskPreflightService {
         surfaceHash,
         source: {
           workItemId: prepared.semanticSource.workItemId,
+          controlRoot: prepared.controlRoot,
           prdHash: prepared.semanticSource.prdHash,
           issuesHash: prepared.semanticSource.issuesHash,
           issueHash: prepared.semanticSource.issueHash,

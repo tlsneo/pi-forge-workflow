@@ -45,14 +45,15 @@ async function resolveExactModel(ctx: ExtensionContext, input: string): Promise<
   return model;
 }
 
-function prompt(runtimeRoot: string, axis: IssueAuditAxis, bindingId: string, workspaceRoot: string): string {
+function prompt(runtimeRoot: string, axis: IssueAuditAxis, bindingId: string, controlRoot: string, workspaceRoot: string): string {
   const contract = CONTRACTS[axis];
   const issueRoot = dirname(runtimeRoot);
   return [
     `Role: independent Forge Issue ${axis} Auditor`,
     `Binding ID: ${bindingId}`,
     `Runtime root: ${runtimeRoot}`,
-    `Repository root: ${workspaceRoot}`,
+    `Control root: ${controlRoot}`,
+    `Target repository root: ${workspaceRoot}`,
     `Issue artifact: ${join(issueRoot, "ISSUE.md")}`,
     `Task manifest: ${join(issueRoot, "task-manifest.json")}`,
     `Task receipts: ${join(runtimeRoot, "receipts")}`,
@@ -96,7 +97,7 @@ export class IssueAuditOrchestrator {
   async start(runtimeRoot: string, ctx: ExtensionContext): Promise<Array<{ axis: IssueAuditAxis; agentId?: string; status: string }>> {
     const service = new RuntimeService(runtimeRoot);
     const manifest = await service.store.readManifest();
-    const config = await loadForgeConfig(manifest.workspaceRoot);
+    const config = await loadForgeConfig(manifest.controlRoot);
     const route = resolveForgeProfile(config, "issueAudit");
     const model = await resolveExactModel(ctx, route.model);
     const protocol = await this.adapter.ping();
@@ -137,7 +138,7 @@ export class IssueAuditOrchestrator {
     const location = { runtimeRoot, axis: job.axis, bindingId: binding.id };
     this.bindings.set(binding.id, location);
     try {
-      const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt: prompt(runtimeRoot, job.axis, binding.id, manifest.workspaceRoot), description: description(binding.id, job.axis), model, thinkingLevel: job.thinking, maxTurns: job.maxTurns, cwd: manifest.workspaceRoot });
+      const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt: prompt(runtimeRoot, job.axis, binding.id, manifest.controlRoot, manifest.workspaceRoot), description: description(binding.id, job.axis), model, thinkingLevel: job.thinking, maxTurns: job.maxTurns, cwd: manifest.workspaceRoot });
       await service.bindAuditAgent(job.axis, binding.id, agentId);
       this.agents.set(agentId, location);
       return { axis: job.axis, agentId, status: "started" };

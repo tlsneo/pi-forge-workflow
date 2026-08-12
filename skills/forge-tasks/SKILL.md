@@ -10,7 +10,7 @@ Investigate the selected Issue implementation closure once. Workers must not inv
 
 ## 1. Load one Issue and close the implementation flow
 
-Call `forge_tasks_status` with the Work Item root and Issue ID. Read only `issues/manifest.json`, the selected `issue.json` / `ISSUE.md`, repository instructions, and the exact repository paths needed to close that Issue. Respect Issue dependencies, frozen Acceptance ownership, design Decisions, and ordered Impact Evidence.
+Call `forge_tasks_status` with the Work Item root and Issue ID. The Target Repository is inherited from the Work Item and cannot be changed here. Read only `issues/manifest.json`, the selected `issue.json` / `ISSUE.md`, Control Root instructions, and the exact Target Repository paths needed to close that Issue. Every product path is relative to the frozen Target Repository root. Respect Issue dependencies, frozen Acceptance ownership, design Decisions, and ordered Impact Evidence.
 
 Before drafting a Slice or Task, write one implementation flow in repository terms:
 
