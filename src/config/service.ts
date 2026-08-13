@@ -6,7 +6,7 @@ import { atomicWriteJson, atomicWriteText } from "../runtime/store.js";
 import type { AvailableModel, ConfigFileChange, ForgeConfig, ForgeInitPreview, ForgeInitReceipt } from "./types.js";
 import { desiredAgentTemplates } from "./agent-templates.js";
 import { planManagedInstructions, renderForgeInstructionBlock } from "./instructions.js";
-import { validateForgeConfig } from "./validation.js";
+import { validateForgeConfig, validateForgeConfigUpdate } from "./validation.js";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -76,7 +76,9 @@ export class ForgeConfigService {
       schemaVersion: 1,
       generation: (currentConfig?.generation ?? 0) + 1,
     };
-    validateForgeConfig(config, availableModels);
+    const modelWarnings = availableModels
+      ? validateForgeConfigUpdate(config, currentConfig, availableModels)
+      : (validateForgeConfig(config), []);
 
     const desiredConfig = `${JSON.stringify(config, null, 2)}\n`;
     const changes: ConfigFileChange[] = [];
@@ -125,7 +127,7 @@ export class ForgeConfigService {
       changes.push(changeFor(gitignorePath, current || undefined, desired));
     }
 
-    const warnings: string[] = [];
+    const warnings: string[] = [...modelWarnings];
     if (config.instructions?.file === "AGENTS.override.md") warnings.push("AGENTS.override.md shadows AGENTS.md and CLAUDE.md in this directory; writing the Forge block there requires explicit user confirmation.");
     if (config.repositoryContext) {
       const contextPaths = [...new Set([

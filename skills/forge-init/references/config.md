@@ -79,7 +79,7 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
 
 The current release supports only Local Issue artifacts and `shared-serial + isolationBackend: none + poolSize: 1`. External tracker publication and isolated workspace pools are not configurable until their execution adapters exist.
 
-Valid Thinking values are `minimal`, `low`, `medium`, `high`, and `xhigh`. Every profile uses an exact available `provider/model`.
+`thinking` is a non-empty model capability name, not a Forge-owned enum. Every profile uses an exact available `provider/model`. During scan and validation, Forge accepts exactly the levels reported for that model by Pi's current model registry, including future levels introduced after this Forge release; unsupported levels are rejected rather than inferred or silently changed.
 
 `instructions.file` records Pi's active repository context file. Selection follows Pi's load priority: `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, then `CLAUDE.MD`; Forge creates `AGENTS.md` when none exists. Forge owns only the content between `<!-- pi-forge-workflow:start -->` and `<!-- pi-forge-workflow:end -->`. Content outside those markers remains user-owned.
 

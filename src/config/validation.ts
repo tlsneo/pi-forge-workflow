@@ -1,8 +1,5 @@
 import { isAbsolute, normalize, sep } from "node:path";
 import type { AvailableModel, ForgeConfig, ForgeModelProfile } from "./types.js";
-import type { ThinkingLevel } from "../runtime/types.js";
-
-const THINKING_LEVELS: ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 
 function requireRelativeSafePath(path: string, label: string): void {
   if (!path.trim()) throw new Error(`${label} must not be empty`);
@@ -14,7 +11,7 @@ function requireRelativeSafePath(path: string, label: string): void {
 function validateProfile(name: string, profile: ForgeModelProfile, availableModels?: AvailableModel[]): void {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`Invalid model profile name: ${name}`);
   if (!profile.model.includes("/")) throw new Error(`${name} model must be exact provider/model`);
-  if (!THINKING_LEVELS.includes(profile.thinking)) throw new Error(`${name} has invalid thinking level ${profile.thinking}`);
+  if (typeof profile.thinking !== "string" || !profile.thinking.trim()) throw new Error(`${name} thinking level must not be empty`);
   if (!Number.isInteger(profile.maxTurns) || profile.maxTurns < 1 || profile.maxTurns > 200) {
     throw new Error(`${name} maxTurns must be an integer from 1 to 200`);
   }
@@ -25,6 +22,25 @@ function validateProfile(name: string, profile: ForgeModelProfile, availableMode
       throw new Error(`${name} model ${profile.model} does not support ${profile.thinking} thinking`);
     }
   }
+}
+
+export function validateForgeConfigUpdate(config: ForgeConfig, currentConfig: ForgeConfig | undefined, availableModels: AvailableModel[]): string[] {
+  validateForgeConfig(config);
+  const warnings: string[] = [];
+  for (const [name, profile] of Object.entries(config.models.profiles)) {
+    const current = currentConfig?.models.profiles[name];
+    const capabilityChanged = !current || current.model !== profile.model || current.thinking !== profile.thinking;
+    if (capabilityChanged) {
+      validateProfile(name, profile, availableModels);
+      continue;
+    }
+    try {
+      validateProfile(name, profile, availableModels);
+    } catch (error) {
+      warnings.push(`Unchanged model profile ${name} has registry drift: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return warnings;
 }
 
 export function validateForgeConfig(config: ForgeConfig, availableModels?: AvailableModel[]): void {

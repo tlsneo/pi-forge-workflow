@@ -20,7 +20,7 @@ export type HandoffStatus = "none" | "valid" | "invalid";
 export type VerificationStatus = "not_run" | "running" | "passed" | "failed";
 export type GitStatus = "not_started" | "committed" | "receipted" | "merged";
 export type IssueStatus = "planned" | "executing" | "integrating" | "auditing" | "completed" | "blocked" | "needs_user" | "failed";
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingLevel = string;
 
 export interface TaskContract {
   id: string;

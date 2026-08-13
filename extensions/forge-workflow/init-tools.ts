@@ -6,16 +6,18 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { ForgeConfigService } from "../../src/config/service.js";
 import { selectPiInstructionFile } from "../../src/config/instructions.js";
+import { supportedThinkingLevelsForModel } from "../../src/config/model-capabilities.js";
 import { discoverRepositoryContext } from "../../src/config/repository-context.js";
 import type { AvailableModel, ForgeConfig, ForgeModelProfile, RepositoryScan, TrackerMode } from "../../src/config/types.js";
 import type { ThinkingLevel } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter } from "../../src/subagents/adapter.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const ThinkingSchema = Type.Union([
-  Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"),
-]);
-const ProfileSchema = Type.Object({ model: Type.String(), thinking: ThinkingSchema, maxTurns: Type.Integer() });
+const ProfileSchema = Type.Object({
+  model: Type.String(),
+  thinking: Type.String({ minLength: 1, description: "Thinking level reported by the selected model in Pi's current model registry" }),
+  maxTurns: Type.Integer(),
+});
 const ConfigSchema = Type.Object({
   schemaVersion: Type.Literal(1),
   generation: Type.Integer(),
@@ -78,14 +80,11 @@ async function execText(pi: ExtensionAPI, command: string, args: string[], cwd: 
 }
 
 function availableModels(ctx: ExtensionContext): AvailableModel[] {
-  const levels: ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
   return ctx.modelRegistry.getAvailable().map((model) => ({
     id: `${model.provider}/${model.id}`,
     name: model.name,
     reasoning: model.reasoning,
-    supportedThinking: model.reasoning
-      ? levels.filter((level) => model.thinkingLevelMap?.[level] !== null)
-      : [],
+    supportedThinking: supportedThinkingLevelsForModel(model),
   })).sort((left, right) => left.id.localeCompare(right.id));
 }
 

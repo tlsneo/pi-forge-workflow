@@ -1,12 +1,14 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Model } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { selectPiInstructionFile } from "../src/config/instructions.js";
+import { supportedThinkingLevelsForModel } from "../src/config/model-capabilities.js";
 import { discoverRepositoryContext } from "../src/config/repository-context.js";
 import { ForgeConfigService } from "../src/config/service.js";
 import type { AvailableModel, ForgeConfig } from "../src/config/types.js";
-import { validateForgeConfig } from "../src/config/validation.js";
+import { validateForgeConfig, validateForgeConfigUpdate } from "../src/config/validation.js";
 
 const roots: string[] = [];
 const packageRoot = process.cwd();
@@ -19,6 +21,22 @@ const models: AvailableModel[] = [
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+function modelWithThinkingMap(thinkingLevelMap: NonNullable<Model<"openai-completions">["thinkingLevelMap"]>): Model<"openai-completions"> {
+  return {
+    id: "model",
+    name: "Model",
+    api: "openai-completions",
+    provider: "test",
+    baseUrl: "https://example.test/v1",
+    reasoning: true,
+    thinkingLevelMap,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 16384,
+  };
+}
 
 function config(overrides: Partial<ForgeConfig> = {}): ForgeConfig {
   return {
@@ -322,7 +340,90 @@ describe("Repository Context discovery", () => {
   });
 });
 
+describe("Pi model thinking capabilities", () => {
+  it("uses Pi's model-specific support calculation across unsupported holes", () => {
+    expect(supportedThinkingLevelsForModel(modelWithThinkingMap({
+      minimal: null,
+      low: null,
+      medium: null,
+      high: "high",
+      xhigh: null,
+      max: "max",
+    }))).toEqual(["high", "max"]);
+    expect(supportedThinkingLevelsForModel(modelWithThinkingMap({
+      high: "high",
+      xhigh: "xhigh",
+      max: null,
+    }))).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+  });
+
+  it("accepts future registry-reported levels without a Forge release", () => {
+    const futureModel = modelWithThinkingMap({ high: "high" });
+    (futureModel.thinkingLevelMap as Record<string, string | null>).ultra = "ultra";
+
+    expect(supportedThinkingLevelsForModel(futureModel)).toContain("ultra");
+  });
+});
+
 describe("validateForgeConfig", () => {
+  it("accepts any non-empty level only when the current Pi model registry reports it as supported", () => {
+    const futureModels: AvailableModel[] = [
+      ...models,
+      { id: "test/future", name: "Future", reasoning: true, supportedThinking: ["high", "ultra"] },
+    ];
+    const futureConfig = config({
+      models: {
+        ...config().models,
+        profiles: {
+          ...config().models.profiles,
+          simple: { model: "test/future", thinking: "ultra", maxTurns: 30 },
+        },
+      },
+    });
+
+    expect(() => validateForgeConfig(futureConfig, futureModels)).not.toThrow();
+    expect(() => validateForgeConfig({
+      ...futureConfig,
+      models: {
+        ...futureConfig.models,
+        profiles: {
+          ...futureConfig.models.profiles,
+          simple: { ...futureConfig.models.profiles.simple!, thinking: "xhigh" },
+        },
+      },
+    }, futureModels)).toThrow("does not support xhigh thinking");
+  });
+
+  it("allows an unrelated supported profile update while warning about unchanged registry drift", () => {
+    const current = config();
+    const driftedModels: AvailableModel[] = models.map((model) => model.id === "test/simple"
+      ? { ...model, supportedThinking: ["minimal", "medium"] }
+      : model);
+    const update = config({
+      models: {
+        ...current.models,
+        profiles: {
+          ...current.models.profiles,
+          verifier: { ...current.models.profiles.verifier!, thinking: "medium" },
+        },
+      },
+    });
+
+    expect(validateForgeConfigUpdate(update, current, driftedModels)).toEqual([
+      "Unchanged model profile simple has registry drift: simple model test/simple does not support low thinking",
+    ]);
+    expect(() => validateForgeConfigUpdate({
+      ...update,
+      models: {
+        ...update.models,
+        profiles: {
+          ...update.models.profiles,
+          verifier: { ...update.models.profiles.verifier!, thinking: "xhigh" },
+        },
+      },
+    }, current, driftedModels)).toThrow("does not support xhigh thinking");
+  });
+
   it("rejects unsafe paths, unavailable models, and unsafe workspace combinations", () => {
     expect(() => validateForgeConfig(config({ artifacts: { root: "../outside", gitPolicy: "ignore" } }), models)).toThrow("inside the repository");
     expect(() => validateForgeConfig(config({
