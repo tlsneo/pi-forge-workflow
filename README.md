@@ -137,7 +137,7 @@ flowchart TD
 | Task Worker | Executes one exact versioned Task contract | Yes, within declared Writes only |
 | Runtime | Validates state, identity, hashes, DAGs, verification, Git scope, receipts, and recovery | N/A |
 
-`Agent completed` never means `Task completed`. A Task completes only after a valid Binding, structured Handoff, terminal Worker, authoritative verification, scoped Git commit, and immutable Receipt.
+`Agent completed` never means `Task completed`. A Task completes only after a valid Binding, structured Handoff, terminal Worker, authoritative verification, scoped Git commit, and immutable Receipt. Once a Receipt exists, the Task and its Binding are irreversibly terminal: late resume, checkpoint, Handoff, or verification activity cannot reopen the Task. Verification also requires `HEAD === Binding baseline` before inspecting the diff.
 
 ## Core design principles
 

@@ -88,6 +88,96 @@ describe("RuntimeService", () => {
     await expect(service.completeTask("T01", "different-commit")).rejects.toThrow("already completed");
   });
 
+  it("rejects stale worker actions after a Task Receipt makes the Binding terminal", async () => {
+    const { service, dag } = await createRuntime();
+    await completeFirstTask(service, dag.tasks[0]!.contractHash);
+    const before = await service.status();
+    const bindingId = before.tasks.T01!.binding!.id;
+    const eventCount = (await service.store.readEvents()).length;
+
+    await expect(service.resumeTask(bindingId)).rejects.toThrow("Receipt");
+    await expect(service.checkpoint(bindingId, {
+      currentStep: "late checkpoint",
+      nextAction: "submit again",
+      changedFiles: ["src/config.ts"],
+      verificationNotes: [],
+    })).rejects.toThrow("Receipt");
+    await expect(service.submitHandoff(bindingId, {
+      changedFiles: ["src/config.ts"],
+      verification: [],
+      produced: ["src/config.ts#AppConfig.timeoutMs"],
+    })).rejects.toThrow("Receipt");
+    await expect(service.beginVerification("T01")).rejects.toThrow("Receipt");
+    await expect(service.blockTask("T01", "stale verification")).rejects.toThrow("Receipt");
+
+    expect(await service.status()).toEqual(before);
+    expect(await service.store.readEvents()).toHaveLength(eventCount);
+  });
+
+  it("makes Handoff submission one-shot and idempotent for identical retries", async () => {
+    const { service, dag } = await createRuntime();
+    const binding = RuntimeService.createBinding({
+      workItemId: "work-item-test",
+      issueId: "issue-test",
+      taskId: "T01",
+      taskVersion: 1,
+      taskContractPath: "tasks/T01/TASK-V001.md",
+      attempt: 1,
+      workspace: service.store.root,
+      contractHash: dag.tasks[0]!.contractHash,
+      model: "test/simple",
+      thinking: "low",
+      maxTurns: 12,
+      startedGeneration: (await service.status()).generation,
+    });
+    await service.claimTask("T01", binding);
+    await service.bindAgent("T01", binding.id, "agent-1");
+    await service.markAgentStarted("agent-1");
+    const handoff = {
+      changedFiles: ["src/config.ts"],
+      verification: [{ command: "npm test -- config", exitCode: 0 }],
+      produced: ["src/config.ts#AppConfig.timeoutMs"],
+    };
+    const accepted = await service.submitHandoff(binding.id, handoff);
+    const eventCount = (await service.store.readEvents()).length;
+
+    expect(await service.submitHandoff(binding.id, handoff)).toEqual(accepted);
+    expect(await service.store.readEvents()).toHaveLength(eventCount);
+    await expect(service.submitHandoff(binding.id, {
+      ...handoff,
+      verification: [{ command: "npm test -- config", exitCode: 1 }],
+    })).rejects.toThrow("different Handoff");
+  });
+
+  it("reconciles a historical Receipt-plus-blocked contradiction through an append-only Runtime event", async () => {
+    const { service, dag } = await createRuntime();
+    await completeFirstTask(service, dag.tasks[0]!.contractHash);
+    await service.store.transact("simulate_legacy_stale_handoff_race", (state) => {
+      const task = state.tasks.T01!;
+      task.status = "blocked";
+      task.verificationStatus = "failed";
+      task.verificationError = "T01 changed undeclared paths from a later Task";
+      task.blocker = task.verificationError;
+      state.issueStatus = "blocked";
+    });
+
+    const result = await service.reconcileTaskReceipt("T01");
+
+    expect(result.reconciled).toBe(true);
+    expect(result.state.tasks.T01).toMatchObject({
+      status: "completed",
+      verificationStatus: "passed",
+      gitStatus: "receipted",
+      receipt: { commit: "commit-t01" },
+    });
+    expect(result.state.tasks.T01?.verificationError).toBeUndefined();
+    expect(result.state.tasks.T01?.blocker).toBeUndefined();
+    expect((await service.store.readEvents()).at(-1)?.type).toBe("task_reconciled_from_receipt");
+
+    const repeated = await service.reconcileTaskReceipt("T01");
+    expect(repeated.reconciled).toBe(false);
+  });
+
   it("normalizes the legacy Spec/Integration Audit axis only at the Runtime read seam", async () => {
     const { root, service } = await createRuntime();
     const state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));

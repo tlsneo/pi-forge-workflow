@@ -141,6 +141,9 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
 
   async function finalizeTaskAgent(location: BindingLocation, event: SubagentLifecycleEvent, terminal: "completed" | "failed" | "stopped" | "aborted"): Promise<void> {
     const service = new RuntimeService(location.runtimeRoot);
+    const before = await service.status();
+    const current = before.tasks[location.taskId];
+    if (current?.receipt || current?.status === "completed" || current?.gitStatus === "receipted") return;
     const state = await service.markAgentTerminal(event.id, terminal, event.error);
     const task = state.tasks[location.taskId];
     if (task?.handoffStatus !== "valid") return;
@@ -314,6 +317,12 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       const service = await indexRuntime(runtimeRoot);
       let state = await service.status();
       const execution = new TaskExecutionService(runtimeRoot);
+      for (const task of Object.values(state.tasks)) {
+        if (task.receipt && (task.status !== "completed" || task.gitStatus !== "receipted" || task.verificationStatus !== "passed" || task.verificationError || task.blocker)) {
+          await execution.reconcileTaskReceipt(task.id);
+          state = await service.status();
+        }
+      }
       const activeModelPolicy = await service.activeModelPolicy();
       for (const task of Object.values(state.tasks)) {
         const blockedByObsoleteRetryBudget = task.status === "blocked"
@@ -520,18 +529,16 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
     async execute(_id, params, _signal, _update, ctx) {
       const runtimeRoot = normalizeRoot(ctx.cwd, params.runtimeRoot);
       const service = await indexRuntime(runtimeRoot);
-      const state = await service.status();
-      const task = Object.values(state.tasks).find((candidate) => candidate.binding?.id === params.bindingId);
-      if (!task?.binding) throw new Error(`Unknown binding: ${params.bindingId}`);
-      const taskPath = join(dirname(runtimeRoot), task.binding.taskContractPath);
+      const { task } = await service.resumeTask(params.bindingId);
+      const taskPath = join(dirname(runtimeRoot), task.binding!.taskContractPath);
       return text(`Binding valid. Read ${taskPath}. Next action: ${task.checkpoint?.nextAction ?? "start the Implementation Blueprint"}.`, {
         runtimeRoot,
-        workItemId: task.binding.workItemId,
-        issueId: task.binding.issueId,
+        workItemId: task.binding!.workItemId,
+        issueId: task.binding!.issueId,
         taskId: task.id,
-        taskVersion: task.binding.taskVersion,
+        taskVersion: task.binding!.taskVersion,
         taskPath,
-        contractHash: task.binding.contractHash,
+        contractHash: task.binding!.contractHash,
         checkpoint: task.checkpoint ?? null,
       });
     },

@@ -111,6 +111,45 @@ describe("TaskExecutionService", () => {
     expect(git(repositoryRoot, "log", "--oneline").split("\n")).toHaveLength(1);
   });
 
+  it("reconciles stale Task state only after validating the immutable Receipt commit in Git", async () => {
+    const { repositoryRoot, runtimeRoot, runtime, binding } = await fixture();
+    await writeFile(join(repositoryRoot, "src", "value.ts"), "export const value = 2;\n");
+    await runtime.submitHandoff(binding.id, { changedFiles: ["src/value.ts"], verification: [], produced: ["value 2"] });
+    await runtime.markAgentTerminal("agent-1", "completed");
+    await new TaskExecutionService(runtimeRoot).finalizeTask("T001");
+    await runtime.store.transact("simulate_stale_completed_task_handoff", (state) => {
+      state.tasks.T001!.status = "blocked";
+      state.tasks.T001!.verificationStatus = "failed";
+      state.tasks.T001!.verificationError = "later Task diff was attributed to T001";
+      state.tasks.T001!.blocker = state.tasks.T001!.verificationError;
+      state.issueStatus = "blocked";
+    });
+
+    const result = await new TaskExecutionService(runtimeRoot).reconcileTaskReceipt("T001");
+
+    expect(result.reconciled).toBe(true);
+    expect(result.state.tasks.T001).toMatchObject({ status: "completed", gitStatus: "receipted", verificationStatus: "passed" });
+    expect(result.state.tasks.T001?.verificationError).toBeUndefined();
+    expect(git(repositoryRoot, "status", "--porcelain")).toBe("");
+  });
+
+  it("rejects authoritative verification when HEAD has advanced beyond the Binding baseline", async () => {
+    const { repositoryRoot, runtimeRoot, runtime, binding } = await fixture();
+    await writeFile(join(repositoryRoot, "src", "later.ts"), "export const later = true;\n");
+    git(repositoryRoot, "add", "src/later.ts");
+    git(repositoryRoot, "commit", "-qm", "later task");
+    await writeFile(join(repositoryRoot, "src", "value.ts"), "export const value = 2;\n");
+    await runtime.submitHandoff(binding.id, { changedFiles: ["src/value.ts"], verification: [], produced: ["value 2"] });
+    await runtime.markAgentTerminal("agent-1", "completed");
+
+    await expect(new TaskExecutionService(runtimeRoot).finalizeTask("T001")).rejects.toThrow("Binding baseline");
+
+    const state = await runtime.status();
+    expect(state.tasks.T001?.status).toBe("awaiting_verification");
+    expect(state.tasks.T001?.verificationStatus).toBe("not_run");
+    expect(git(repositoryRoot, "log", "-1", "--pretty=%s")).toBe("later task");
+  });
+
   it("grants a fresh retry budget after Model Policy rebind and rolls back interrupted Writes", async () => {
     const { repositoryRoot, runtimeRoot, runtime } = await fixture();
     await writeFile(join(repositoryRoot, "src", "value.ts"), "export const value = 2;\n");

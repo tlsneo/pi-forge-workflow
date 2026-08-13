@@ -312,6 +312,11 @@ export class RuntimeStore {
     await atomicWriteJson(join(this.root, "checkpoints", `${taskId}.json`), checkpoint);
   }
 
+  async readReceipt<T>(taskId: string, taskVersion = 1): Promise<T | undefined> {
+    const path = join(this.root, "receipts", `${taskId}-V${String(taskVersion).padStart(3, "0")}.json`);
+    return (await pathExists(path)) ? JSON.parse(await readFile(path, "utf8")) as T : undefined;
+  }
+
   async writeReceipt(taskId: string, receipt: { taskVersion?: number }): Promise<void> {
     const taskVersion = receipt.taskVersion ?? 1;
     const path = join(this.root, "receipts", `${taskId}-V${String(taskVersion).padStart(3, "0")}.json`);

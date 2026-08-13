@@ -137,7 +137,7 @@ flowchart TD
 | Task Worker | 执行一个精确的版本化 Task Contract | 是，但只能修改声明的 Writes |
 | Runtime | 校验状态、身份、Hash、DAG、Verification、Git Scope、Receipt 和恢复 | 不适用 |
 
-`Agent completed` 永远不等于 `Task completed`。Task 只有同时满足以下条件才完成：有效 Binding、结构化 Handoff、Worker 终态、权威验证、Scoped Git Commit 和不可变 Receipt。
+`Agent completed` 永远不等于 `Task completed`。Task 只有同时满足以下条件才完成：有效 Binding、结构化 Handoff、Worker 终态、权威验证、Scoped Git Commit 和不可变 Receipt。Receipt 一旦存在，该 Task 和原 Binding 即进入不可逆终态；迟到的 Resume、Checkpoint、Handoff 或 Verification 不得重新打开 Task。Verification 开始前还必须满足 `HEAD === Binding baseline`。
 
 ## 核心设计思路
 

@@ -26,6 +26,7 @@ import type {
   TaskDag,
   TaskHandoff,
   TaskReceipt,
+  TaskState,
 } from "./types.js";
 
 const TERMINAL_AGENT_STATUSES = new Set(["completed", "failed", "stopped", "aborted"]);
@@ -34,6 +35,41 @@ function requireTask(state: IssueRuntimeState, taskId: string) {
   const task = state.tasks[taskId];
   if (!task) throw new Error(`Unknown task: ${taskId}`);
   return task;
+}
+
+function requireActiveTaskBinding(state: IssueRuntimeState, bindingId: string) {
+  const task = Object.values(state.tasks).find((candidate) => candidate.binding?.id === bindingId);
+  if (!task) throw new Error(`Unknown binding: ${bindingId}`);
+  if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") {
+    throw new Error(`${task.id} has an immutable Task Receipt; Binding ${bindingId} is terminal`);
+  }
+  if (!["starting", "running"].includes(task.status)) {
+    throw new Error(`${task.id} Binding ${bindingId} is not writable from ${task.status}`);
+  }
+  return task;
+}
+
+function receiptMatchesTask(receipt: TaskReceipt, task: TaskState, contract: TaskContract, manifest: RuntimeManifest): boolean {
+  return receipt.schemaVersion === 1
+    && receipt.workItemId === manifest.workItemId
+    && receipt.issueId === manifest.issueId
+    && receipt.taskId === task.id
+    && receipt.taskVersion === contract.version
+    && receipt.taskContractPath === `tasks/${task.id}/TASK-V${String(contract.version).padStart(3, "0")}.md`
+    && receipt.contractHash === contract.contractHash;
+}
+
+function issueStatusAfterReceiptReconciliation(state: IssueRuntimeState): IssueRuntimeState["issueStatus"] {
+  if (state.humanDecision?.status === "open" || state.remediationPlan?.status === "needs_user") return "needs_user";
+  const tasks = Object.values(state.tasks);
+  if (tasks.some((task) => task.status === "failed" || task.status === "cancelled")) return "failed";
+  if (tasks.some((task) => task.status === "blocked" || task.status === "needs_user")) return "blocked";
+  if (tasks.some((task) => task.status !== "completed")) return "executing";
+  const gates = Object.values(state.sliceGates ?? {});
+  if (gates.some((gate) => gate.status === "failed")) return "blocked";
+  if (gates.some((gate) => gate.status !== "passed") || gates.length === 0) return "integrating";
+  if (Object.values(state.audits ?? {}).some((audit) => audit?.verdict === "blocked")) return "blocked";
+  return state.issueStatus === "completed" ? "completed" : "auditing";
 }
 
 export class RuntimeService {
@@ -151,8 +187,12 @@ export class RuntimeService {
   }
 
   async bindAgent(taskId: string, bindingId: string, agentId: string): Promise<IssueRuntimeState> {
+    const current = await this.store.readState();
+    const currentTask = requireTask(current, taskId);
+    if (currentTask.receipt || currentTask.status === "completed" || currentTask.gitStatus === "receipted") return current;
     return this.store.transact("agent_bound", (state) => {
       const task = requireTask(state, taskId);
+      if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") return;
       if (!task.binding || task.binding.id !== bindingId) throw new Error(`Binding mismatch for ${taskId}`);
       if (task.binding.agentId && task.binding.agentId !== agentId) throw new Error(`${taskId} is already bound to another agent`);
       task.binding.agentId = agentId;
@@ -163,34 +203,53 @@ export class RuntimeService {
     const current = await this.store.readState();
     const currentTask = Object.values(current.tasks).find((candidate) => candidate.binding?.agentId === agentId);
     if (!currentTask) throw new Error(`Unknown agent binding: ${agentId}`);
-    if (currentTask.status === "completed") return current;
+    if (currentTask.receipt || currentTask.status === "completed" || currentTask.gitStatus === "receipted") return current;
     return this.store.transact("agent_started", (state) => {
       const task = Object.values(state.tasks).find((candidate) => candidate.binding?.agentId === agentId);
       if (!task) throw new Error(`Unknown agent binding: ${agentId}`);
+      if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") return;
       task.agentStatus = "running";
       task.status = task.handoffStatus === "valid" ? "awaiting_verification" : "running";
     }, { details: { agentId } });
   }
 
+  async resumeTask(bindingId: string): Promise<{ state: IssueRuntimeState; task: IssueRuntimeState["tasks"][string] }> {
+    const state = await this.store.readState();
+    return { state, task: requireActiveTaskBinding(state, bindingId) };
+  }
+
   async checkpoint(bindingId: string, checkpoint: Omit<TaskCheckpoint, "generation" | "updatedAt">): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
-    const task = Object.values(current.tasks).find((candidate) => candidate.binding?.id === bindingId);
-    if (!task) throw new Error(`Unknown binding: ${bindingId}`);
+    const task = requireActiveTaskBinding(current, bindingId);
     const nextCheckpoint: TaskCheckpoint = {
       ...checkpoint,
       generation: (task.checkpoint?.generation ?? 0) + 1,
       updatedAt: new Date().toISOString(),
     };
-    await this.store.writeCheckpoint(task.id, nextCheckpoint);
-    return this.store.transact("task_checkpointed", (state) => {
-      requireTask(state, task.id).checkpoint = nextCheckpoint;
+    const state = await this.store.transact("task_checkpointed", (next) => {
+      requireActiveTaskBinding(next, bindingId).checkpoint = nextCheckpoint;
     }, { taskId: task.id, details: { bindingId, checkpointGeneration: nextCheckpoint.generation } });
+    await this.store.writeCheckpoint(task.id, nextCheckpoint);
+    return state;
   }
 
   async submitHandoff(bindingId: string, handoff: Omit<TaskHandoff, "submittedAt">): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
-    const currentTask = Object.values(current.tasks).find((candidate) => candidate.binding?.id === bindingId);
-    if (!currentTask) throw new Error(`Unknown binding: ${bindingId}`);
+    const locatedTask = Object.values(current.tasks).find((candidate) => candidate.binding?.id === bindingId);
+    if (!locatedTask) throw new Error(`Unknown binding: ${bindingId}`);
+    if (locatedTask.receipt || locatedTask.status === "completed" || locatedTask.gitStatus === "receipted") {
+      throw new Error(`${locatedTask.id} has an immutable Task Receipt; Binding ${bindingId} is terminal`);
+    }
+    if (locatedTask.handoffStatus === "valid" && locatedTask.handoff) {
+      const existing = {
+        changedFiles: locatedTask.handoff.changedFiles,
+        verification: locatedTask.handoff.verification,
+        produced: locatedTask.handoff.produced,
+      };
+      if (stableHash(existing) === stableHash(handoff)) return current;
+      throw new Error(`${locatedTask.id} Binding ${bindingId} already submitted a different Handoff`);
+    }
+    const currentTask = requireActiveTaskBinding(current, bindingId);
     const contract = (await this.store.readDag()).tasks.find((candidate) => candidate.id === currentTask.id);
     if (!contract) throw new Error(`Missing contract for ${currentTask.id}`);
     const unexpectedFiles = handoff.changedFiles.filter((path) => !contract.writes.includes(path));
@@ -199,8 +258,7 @@ export class RuntimeService {
     if (unexpectedProducts.length > 0) throw new Error(`Handoff contains undeclared Produces: ${unexpectedProducts.join(", ")}`);
 
     return this.store.transact("task_handoff_received", (state) => {
-      const task = Object.values(state.tasks).find((candidate) => candidate.binding?.id === bindingId);
-      if (!task) throw new Error(`Unknown binding: ${bindingId}`);
+      const task = requireActiveTaskBinding(state, bindingId);
       task.handoffStatus = "valid";
       task.handoff = { ...handoff, submittedAt: new Date().toISOString() };
       task.status = "awaiting_verification";
@@ -221,10 +279,11 @@ export class RuntimeService {
     const current = await this.store.readState();
     const currentTask = Object.values(current.tasks).find((candidate) => candidate.binding?.agentId === agentId);
     if (!currentTask) throw new Error(`Unknown agent binding: ${agentId}`);
-    if (currentTask.status === "completed") return current;
+    if (currentTask.receipt || currentTask.status === "completed" || currentTask.gitStatus === "receipted") return current;
     return this.store.transact("agent_terminal", (state) => {
       const task = Object.values(state.tasks).find((candidate) => candidate.binding?.agentId === agentId);
       if (!task) throw new Error(`Unknown agent binding: ${agentId}`);
+      if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") return;
       task.agentStatus = status;
       if (task.handoffStatus === "valid") {
         task.status = "awaiting_verification";
@@ -238,8 +297,10 @@ export class RuntimeService {
   async beginVerification(taskId: string): Promise<IssueRuntimeState> {
     return this.store.transact("verification_started", (state) => {
       const task = requireTask(state, taskId);
+      if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") throw new Error(`${taskId} has an immutable Task Receipt`);
       if (!TERMINAL_AGENT_STATUSES.has(task.agentStatus)) throw new Error(`${taskId} agent is not terminal`);
       if (task.handoffStatus !== "valid" || !task.handoff) throw new Error(`${taskId} has no valid handoff`);
+      if (task.status !== "awaiting_verification") throw new Error(`${taskId} is not awaiting verification`);
       task.status = "verifying";
       task.verificationStatus = "running";
     }, { taskId });
@@ -268,7 +329,7 @@ export class RuntimeService {
   async completeTask(taskId: string, commit: string): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
     const task = requireTask(current, taskId);
-    if (task.status === "completed") throw new Error(`${taskId} is already completed`);
+    if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") throw new Error(`${taskId} is already completed`);
     if (task.status !== "verifying" || task.verificationStatus !== "passed" || !task.handoff || !task.binding) {
       throw new Error(`${taskId} is not eligible for completion`);
     }
@@ -302,9 +363,50 @@ export class RuntimeService {
     }, { taskId, details: { commit } });
   }
 
+  async reconcileTaskReceipt(taskId: string): Promise<{ state: IssueRuntimeState; reconciled: boolean }> {
+    const current = await this.store.readState();
+    const task = requireTask(current, taskId);
+    const dag = await this.store.readDag();
+    const contract = dag.tasks.find((candidate) => candidate.id === taskId);
+    if (!contract) throw new Error(`Missing contract for ${taskId}`);
+    const receipt = await this.store.readReceipt<TaskReceipt>(taskId, contract.version);
+    if (!receipt) throw new Error(`${taskId} has no immutable Task Receipt to reconcile`);
+    const manifest = await this.store.readManifest();
+    if (!receiptMatchesTask(receipt, task, contract, manifest)) throw new Error(`${taskId} Task Receipt identity does not match the frozen Runtime`);
+    if (task.status === "completed"
+      && task.gitStatus === "receipted"
+      && task.verificationStatus === "passed"
+      && stableHash(task.receipt) === stableHash(receipt)
+      && !task.verificationError
+      && !task.blocker) {
+      return { state: current, reconciled: false };
+    }
+    const state = await this.store.transact("task_reconciled_from_receipt", (next) => {
+      const mutable = requireTask(next, taskId);
+      mutable.receipt = receipt;
+      mutable.status = "completed";
+      mutable.gitStatus = "receipted";
+      mutable.handoffStatus = "valid";
+      mutable.handoff = {
+        changedFiles: structuredClone(receipt.changedFiles),
+        produced: structuredClone(receipt.produced),
+        verification: structuredClone(receipt.verification),
+        submittedAt: receipt.completedAt,
+      };
+      mutable.verificationStatus = "passed";
+      mutable.authoritativeVerification = structuredClone(receipt.verification);
+      delete mutable.verificationError;
+      delete mutable.blocker;
+      refreshReadyStates(dag, next);
+      next.issueStatus = issueStatusAfterReceiptReconciliation(next);
+    }, { taskId, details: { commit: receipt.commit, reason: "Immutable Task Receipt supersedes stale lifecycle state" } });
+    return { state, reconciled: true };
+  }
+
   async retryTask(taskId: string, reason: string): Promise<IssueRuntimeState> {
     return this.store.transact("task_retry_scheduled", (state) => {
       const task = requireTask(state, taskId);
+      if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") throw new Error(`${taskId} has an immutable Task Receipt`);
       if (!["retry_ready", "interrupted", "blocked"].includes(task.status)) {
         throw new Error(`${taskId} is not retryable from ${task.status}`);
       }
@@ -323,6 +425,7 @@ export class RuntimeService {
   async blockTask(taskId: string, reason: string): Promise<IssueRuntimeState> {
     return this.store.transact("task_blocked", (state) => {
       const task = requireTask(state, taskId);
+      if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") throw new Error(`${taskId} has an immutable Task Receipt`);
       task.status = "blocked";
       task.blocker = reason;
       state.issueStatus = "blocked";

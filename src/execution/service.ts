@@ -75,6 +75,19 @@ export class TaskExecutionService {
     return head.stdout.trim();
   }
 
+  async reconcileTaskReceipt(taskId: string): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; reconciled: boolean }> {
+    await this.requireFrozenGitRoot();
+    const state = await this.runtime.status();
+    const task = state.tasks[taskId];
+    if (!task?.receipt) throw new Error(`${taskId} has no Task Receipt to reconcile`);
+    const manifest = await this.runtime.store.readManifest();
+    const commitExists = await git(manifest.workspaceRoot, ["cat-file", "-e", `${task.receipt.commit}^{commit}`]);
+    if (commitExists.exitCode !== 0) throw new Error(`${taskId} Receipt commit does not exist: ${task.receipt.commit}`);
+    const ancestor = await git(manifest.workspaceRoot, ["merge-base", "--is-ancestor", task.receipt.commit, "HEAD"]);
+    if (ancestor.exitCode !== 0) throw new Error(`${taskId} Receipt commit is not an ancestor of current HEAD: ${task.receipt.commit}`);
+    return this.runtime.reconcileTaskReceipt(taskId);
+  }
+
   async prepareRetry(taskId: string, maxAttempts = 2): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; retried: boolean }> {
     await this.requireFrozenGitRoot();
     const state = await this.runtime.status();
@@ -100,12 +113,18 @@ export class TaskExecutionService {
     await this.requireFrozenGitRoot();
     const state = await this.runtime.status();
     const task = state.tasks[taskId];
+    if (task?.receipt || task?.status === "completed" || task?.gitStatus === "receipted") throw new Error(`${taskId} has an immutable Task Receipt`);
     if (!task?.binding || !task.handoff) throw new Error(`${taskId} has no bound Handoff`);
     const manifest = await this.runtime.store.readManifest();
     const contract = (await this.runtime.store.readDag()).tasks.find((candidate) => candidate.id === taskId);
     if (!contract) throw new Error(`Missing Task contract ${taskId}`);
     const baseline = task.binding.baselineCommit;
     if (!baseline) throw new Error(`${taskId} Binding has no Git baseline`);
+    const headBeforeVerification = await git(manifest.workspaceRoot, ["rev-parse", "HEAD"]);
+    if (headBeforeVerification.exitCode !== 0 || !headBeforeVerification.stdout.trim()) throw new Error(`Unable to read HEAD before verifying ${taskId}`);
+    if (headBeforeVerification.stdout.trim() !== baseline) {
+      throw new Error(`${taskId} Binding baseline ${baseline} is stale; current HEAD is ${headBeforeVerification.stdout.trim()}`);
+    }
     await this.runtime.beginVerification(taskId);
 
     const actual = await this.changedFiles(manifest.workspaceRoot, baseline);
