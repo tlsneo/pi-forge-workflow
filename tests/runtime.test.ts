@@ -59,6 +59,16 @@ async function completeFirstTask(service: RuntimeService, contractHash: string) 
 }
 
 describe("RuntimeService", () => {
+  it("defaults legacy Runtime manifests to Standard Assurance", async () => {
+    const { root, service } = await createRuntime();
+    const manifestPath = join(root, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    delete manifest.assuranceProfile;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+    expect((await service.store.readManifest()).assuranceProfile).toBe("standard");
+  });
+
   it("persists the state machine and unlocks the next frontier", async () => {
     const { service, dag } = await createRuntime();
     expect(await service.frontier()).toEqual(["T01"]);

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,13 +19,17 @@ class FakeBus implements EventBus {
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }))));
 
-function config(): ForgeConfig {
+function git(root: string, ...args: string[]): void {
+  execFileSync("git", args, { cwd: root, stdio: "ignore" });
+}
+
+function config(preset: ForgeConfig["review"]["preset"] = "standard"): ForgeConfig {
   const audit = { model: "test/audit", thinking: "high" as const, maxTurns: 20 };
   return {
     schemaVersion: 1, generation: 1, artifacts: { root: ".forge", gitPolicy: "ignore" }, tracker: { mode: "local", publishRequiresConfirmation: true },
     workspace: { mode: "shared-serial", isolationBackend: "none", poolSize: 1 },
     models: { profiles: { simple: audit, medium: audit, complex: audit, audit, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } }, routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit", blockerVerifier: "verifier", issueAudit: "audit" } },
-    review: { preset: "standard", prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 }, blockerVerification: { profile: "verifier", requireDifferentModel: true } },
+    review: { preset, prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 }, blockerVerification: { profile: "verifier", requireDifferentModel: true } },
     commands: {}, agents: { directory: ".pi/agents", templateVersion: 1 },
   };
 }
@@ -34,6 +39,43 @@ function context(root: string): ExtensionContext {
 }
 
 describe("IssueAuditOrchestrator", () => {
+  it("completes Fast Assurance mechanically without pinging or spawning final Auditors", async () => {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "pi-forge-fast-completion-"));
+    roots.push(repositoryRoot);
+    await writeFile(join(repositoryRoot, "README.md"), "fixture\n");
+    await writeFile(join(repositoryRoot, ".gitignore"), "/.forge/\n");
+    git(repositoryRoot, "init", "-q");
+    git(repositoryRoot, "config", "user.email", "forge@example.com");
+    git(repositoryRoot, "config", "user.name", "Forge Test");
+    git(repositoryRoot, "add", ".");
+    git(repositoryRoot, "commit", "-qm", "baseline");
+    const runtimeRoot = join(repositoryRoot, ".forge", "issues", "I001", "runtime");
+    const runtime = new RuntimeService(runtimeRoot);
+    await runtime.initialize({
+      workItemId: "work-item-test",
+      issueId: "I001",
+      issueHash: "hash",
+      workspaceRoot: repositoryRoot,
+      workspaceMode: "shared-serial",
+      assuranceProfile: "fast",
+      modelPolicy: { defaultProfile: "audit", profiles: { audit: { model: "test/audit", thinking: "high", maxTurns: 20 } }, roles: { "task-worker": "audit" } },
+    }, { generation: 1, tasks: [] }, [{ id: "S001", gate: [] }]);
+    await runtime.store.transact("test_fast_ready_for_completion", (state) => {
+      state.sliceGates!.S001!.status = "passed";
+      state.issueStatus = "auditing";
+    });
+
+    const bus = new FakeBus();
+    let rpcCalls = 0;
+    bus.on("subagents:rpc:ping", () => { rpcCalls += 1; });
+    bus.on("subagents:rpc:spawn", () => { rpcCalls += 1; });
+    const started = await new IssueAuditOrchestrator(new PiSubagentsAdapter(bus, 100)).start(runtimeRoot, context(repositoryRoot));
+
+    expect(started).toEqual([]);
+    expect(rpcCalls).toBe(0);
+    expect((await runtime.status()).issueStatus).toBe("completed");
+  });
+
   it("automatically spawns three independent final Audit Bindings and completes on three passes", async () => {
     const repositoryRoot = await mkdtemp(join(tmpdir(), "pi-forge-issue-audit-"));
     roots.push(repositoryRoot);

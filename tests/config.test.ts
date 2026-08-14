@@ -163,9 +163,18 @@ describe("ForgeConfigService", () => {
     const { loadForgeConfig } = await import("../src/config/resolver.js");
     const normalized = await loadForgeConfig(root);
     expect(normalized.models.routing.taskPreflight).toBe("audit");
+    expect(normalized.models.routing.taskConformanceAudit).toBe("audit");
     expect(normalized.models.routing).not.toHaveProperty("taskAudit");
     expect(normalized.models.routing).not.toHaveProperty("optionCandidate");
     expect(normalized).not.toHaveProperty("tournament");
+  });
+
+  it("defaults Task Conformance to the existing simple Task route for legacy Configs", async () => {
+    const { root } = await createService();
+    await mkdir(join(root, ".pi"), { recursive: true });
+    await writeFile(join(root, ".pi", "forge.json"), JSON.stringify(config()));
+    const { loadForgeConfig } = await import("../src/config/resolver.js");
+    expect((await loadForgeConfig(root)).models.routing.taskConformanceAudit).toBe("simple");
   });
 
   it("supports a custom artifact root", async () => {
@@ -275,7 +284,7 @@ describe("ForgeConfigService", () => {
       overwriteTemplatePaths: [".pi/agents/task-worker.md"],
       availableModels: models,
     });
-    expect(await readFile(join(root, ".pi", "agents", "task-worker.md"), "utf8")).toContain("Forge Micro Task worker");
+    expect(await readFile(join(root, ".pi", "agents", "task-worker.md"), "utf8")).toContain("Forge Task executor");
   });
 });
 

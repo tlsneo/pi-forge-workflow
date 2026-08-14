@@ -76,8 +76,12 @@ describe("non-Git Forge Control Workspace", () => {
 
     const command = "grep -q 'value = 2' src/value.ts";
     const slices: SliceDraft[] = [{ id: "S001", title: "Selected value", goal: "Expose value 2", acceptanceIds: ["AC-01"], taskIds: ["T001"], gate: [{ command, timeoutMs: 30_000, proves: "AC-01" }] }];
-    const tasks: MicroTaskDraft[] = [{ id: "T001", title: "Update selected repository value", sliceId: "S001", goal: "Expose value 2", editPoint: { path: "src/value.ts", symbol: "value" }, reads: [{ path: "src/value.ts", symbol: "value", reason: "Existing export" }], writes: ["src/value.ts"], dependencies: [], conflicts: [], produces: ["value 2 export"], consumes: [], acceptanceIds: ["AC-01"], implementationBlueprint: ["Change value from 1 to 2.", "Preserve the export shape."], outOfScope: ["Other repositories"], verification: [{ command, timeoutMs: 30_000 }], modelProfile: "simple" }];
+    const tasks: MicroTaskDraft[] = [{ id: "T001", title: "Update selected repository value", sliceId: "S001", goal: "Expose value 2", editPoint: { path: "src/value.ts", symbol: "value" }, reads: [{ path: "src/value.ts", symbol: "value", reason: "Existing export" }], writes: ["src/value.ts"], dependencies: [], conflicts: [], produces: ["value 2 export"], consumes: [], acceptanceIds: ["AC-01"], implementationBlueprint: [{ id: "BP-01", instruction: "Change value from 1 to 2.", expectedEvidence: ["src/value.ts#value diff"] }, { id: "BP-02", instruction: "Preserve the export shape.", expectedEvidence: ["Export remains named value"] }], expectedPatchShape: ["One literal change in src/value.ts"], forbiddenChanges: ["No other repository changes"], stopConditions: ["Stop if value export is absent"], outOfScope: ["Other repositories"], verification: [{ command, timeoutMs: 30_000 }], modelProfile: "simple" }];
     const frozen = await new TasksService(workItemRoot).submit("I001", slices, tasks);
+    const runtimeManifestPath = join(frozen.manifest.runtimeRoot, "manifest.json");
+    const legacyManifest = JSON.parse(await readFile(runtimeManifestPath, "utf8"));
+    legacyManifest.taskConformanceRequired = false;
+    await writeFile(runtimeManifestPath, JSON.stringify(legacyManifest, null, 2));
     const runtime = new RuntimeService(frozen.manifest.runtimeRoot);
     const manifest = await runtime.store.readManifest();
     expect(manifest).toMatchObject({ controlRoot, repositoryRoot, workspaceRoot: repositoryRoot });

@@ -28,7 +28,7 @@ class FakeBus implements EventBus {
 
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
-function config(): ForgeConfig {
+function config(preset: ForgeConfig["review"]["preset"] = "standard"): ForgeConfig {
   const medium = { model: "test/medium", thinking: "high" as const, maxTurns: 20 };
   return {
     schemaVersion: 1,
@@ -40,7 +40,7 @@ function config(): ForgeConfig {
       profiles: { simple: { model: "test/simple", thinking: "low", maxTurns: 12 }, medium, complex: medium, audit: { model: "test/audit", thinking: "high", maxTurns: 20 }, verifier: { model: "test/verifier", thinking: "high", maxTurns: 20 } },
       routing: { "task.simple": "simple", "task.medium": "medium", "task.complex": "complex", prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit", blockerVerifier: "verifier", taskPreflight: "audit", remediationPlanner: "complex", issueAudit: "audit" },
     },
-    review: { preset: "standard", prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 }, blockerVerification: { profile: "verifier", requireDifferentModel: true } },
+    review: { preset, prd: { coverageReviewers: 1, evidenceReviewers: 1, architectureReviewers: 1 }, blockerVerification: { profile: "verifier", requireDifferentModel: true } },
     commands: { test: "npm test", typecheck: "npm run typecheck" },
     agents: { directory: ".pi/agents", templateVersion: 1 },
   };
@@ -72,11 +72,11 @@ function prd(): ForgePrd {
   };
 }
 
-async function fixture() {
+async function fixture(preset: ForgeConfig["review"]["preset"] = "standard") {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "pi-forge-tasks-"));
   roots.push(repositoryRoot);
   await mkdir(join(repositoryRoot, ".pi"), { recursive: true });
-  await writeFile(join(repositoryRoot, ".pi", "forge.json"), JSON.stringify(config()));
+  await writeFile(join(repositoryRoot, ".pi", "forge.json"), JSON.stringify(config(preset)));
   const workItemRoot = join(repositoryRoot, ".forge", "work-items", "label");
   const workItem = new WorkItemService(workItemRoot);
   await workItem.initialize({ workItemId: "label", title: "Config label", repositoryRoot, repositoryRevision: revision });
@@ -104,7 +104,11 @@ function plan(): { slices: SliceDraft[]; tasks: MicroTaskDraft[] } {
       editPoint: { path: "src/config.ts", symbol: "AppConfig" },
       reads: [{ path: "src/config.ts", symbol: "AppConfig", reason: "Defines the interface and createConfig literal" }],
       writes: ["src/config.ts"], dependencies: [], conflicts: [], produces: ["AppConfig.label behavior"], consumes: [], acceptanceIds: ["AC-01"],
-      implementationBlueprint: ["Add a readonly label string field to AppConfig without changing retries.", "Set label to default in createConfig and add the focused unit assertion at the existing test seam."],
+      implementationBlueprint: [
+        { id: "BP-01", instruction: "Add a readonly label string field to AppConfig immediately after retries.", expectedEvidence: ["src/config.ts#AppConfig field diff"] },
+        { id: "BP-02", instruction: "Set label to default in createConfig and preserve retries unchanged.", expectedEvidence: ["src/config.ts#createConfig literal diff"] },
+      ],
+      expectedPatchShape: ["AppConfig and createConfig change in src/config.ts"], forbiddenChanges: ["No retry behavior or CLI configuration changes"], stopConditions: ["Stop if AppConfig or createConfig is absent"],
       outOfScope: ["Changing retries", "Adding CLI configuration"], verification: [{ command: "npm test", timeoutMs: 120_000 }], modelProfile: "simple",
     }],
   };
@@ -145,11 +149,26 @@ describe("TasksService", () => {
     const taskMarkdown = await readFile(join(taskRoot, "TASK-V001.md"), "utf8");
     expect(taskMarkdown).toContain("T001@V001");
     expect(taskMarkdown).toContain("src/config.ts#AppConfig");
-    expect(taskMarkdown).toContain("Implementation Blueprint");
+    expect(taskMarkdown).toContain("### BP-01");
+    expect(taskMarkdown).toContain("Expected Evidence");
+    expect(taskMarkdown).toContain("## Expected Patch Shape");
+    expect(taskMarkdown).toContain("## Forbidden Changes");
+    expect(taskMarkdown).toContain("## Stop Conditions");
     expect(taskMarkdown).toContain("## Minimal Implementation Policy");
     expect(taskMarkdown).toContain("Fallback is default-deny");
     expect(taskMarkdown).toContain("Keep composition roots and app entry modules thin");
     expect(JSON.parse(await readFile(join(result.manifest.runtimeRoot, "dag.json"), "utf8")).tasks[0].contractHash).not.toBe("pending");
+  });
+
+  it("freezes Fast Assurance into the Issue Runtime manifest", async () => {
+    const { tasks } = await fixture("fast");
+    const input = plan();
+    const result = await tasks.submit("I001", input.slices, input.tasks);
+
+    const runtime = new RuntimeService(result.manifest.runtimeRoot);
+    expect((await runtime.store.readManifest()).assuranceProfile).toBe("fast");
+    expect((await runtime.store.readManifest()).taskConformanceRequired).toBe(true);
+    expect((await runtime.activeModelPolicy()).policy.roles["task-conformance-auditor"]).toBe("simple");
   });
 
   it("normalizes legacy Issue repository identity only when Tasks read the Artifact", async () => {
@@ -225,7 +244,7 @@ describe("TasksService", () => {
     expect(same.status).toBe("blocked");
 
     const revised = plan();
-    revised.tasks[0] = { ...revised.tasks[0]!, implementationBlueprint: [...revised.tasks[0]!.implementationBlueprint, "Insert label immediately after retries in AppConfig and preserve the existing factory field order."] };
+    revised.tasks[0] = { ...revised.tasks[0]!, implementationBlueprint: [...revised.tasks[0]!.implementationBlueprint, { id: "BP-03", instruction: "Insert label immediately after retries in AppConfig and preserve the existing factory field order.", expectedEvidence: ["src/config.ts#AppConfig field order"] }] };
     const next = await orchestrator.propose({ workItemRoot, issueId: "I001", slices: revised.slices, tasks: revised.tasks, ctx: context(repositoryRoot) });
     expect(next.status).toBe("started");
     expect(next.proposalGeneration).toBe(2);
@@ -293,12 +312,23 @@ describe("TasksService", () => {
       editPoint: { path: "src/config.test.ts", symbol: "createConfig label test" },
       reads: [{ path: "src/config.ts", symbol: "createConfig", reason: "Consumes the implemented return behavior" }, { path: "src/config.test.ts", symbol: "createConfig tests", reason: "Existing test location" }],
       writes: ["src/config.test.ts"], dependencies: ["T001"], conflicts: [], produces: ["AC-01 verification"], consumes: ["T001::AppConfig label contract"], acceptanceIds: ["AC-01"],
-      implementationBlueprint: ["Add a focused assertion for label default in the existing createConfig test.", "Keep the retries assertion to prove the edge behavior is unchanged."],
+      implementationBlueprint: [
+        { id: "BP-01", instruction: "Add a focused assertion for label default in the existing createConfig test.", expectedEvidence: ["src/config.test.ts#createConfig assertion diff"] },
+        { id: "BP-02", instruction: "Keep the retries assertion unchanged to prove the edge behavior remains stable.", expectedEvidence: ["Existing retries assertion remains present"] },
+      ],
+      expectedPatchShape: ["One focused test assertion in src/config.test.ts"], forbiddenChanges: ["No second test framework"], stopConditions: ["Stop if the existing createConfig test seam is absent"],
       outOfScope: ["Adding a second test framework"], verification: [{ command: "npm test", timeoutMs: 120_000 }], modelProfile: "simple",
     });
     const result = await tasks.submit("I001", input.slices, input.tasks);
     expect(result.runtime.tasks.T001?.status).toBe("ready");
     expect(result.runtime.tasks.T002?.status).toBe("pending");
+  });
+
+  it("rejects ambiguous Blueprint steps without stable IDs and Expected Evidence", async () => {
+    const { tasks } = await fixture();
+    const input = plan();
+    input.tasks[0] = { ...input.tasks[0]!, implementationBlueprint: ["Change the config", "Add tests"] };
+    await expect(tasks.submit("I001", input.slices, input.tasks)).rejects.toThrow("must declare id, instruction, and expectedEvidence");
   });
 
   it("rejects non-self-contained Tasks and unproven dependencies", async () => {
