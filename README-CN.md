@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-一个面向 [Pi](https://pi.dev) 的确定性、证据驱动工程工作流：把功能讨论转换为经过审查的 PRD、精确的 Local Issue、小而可执行的 Task、经过权威验证的 Git Commit、最终 Audit，以及有边界的 Remediation。
+一个面向 [Pi](https://pi.dev) 的确定性、证据驱动工程工作流：把功能讨论转换为经过审查的 PRD、精确的 Local Issue、小而可执行的 Task、经过权威验证的 Git Commit、按 Assurance 选择的完成路径，以及有边界的 Remediation。
 
 > **状态：**实验性 MVP。当前只实现了刻意收敛的 `shared-serial` 执行路径，并在不确定时 Fail-closed。采用前请阅读[当前限制](#当前限制)。
 
@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 也可以固定 Tag 或 Commit：
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.3.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.6.0
 ```
 
 ### 从本地 Checkout 安装
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 如果希望只安装到当前项目，给 `pi install` 增加 `-l`。
 
-> 当前 `package.json` 仍是 `"private": true` 和版本 `0.3.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
+> 当前 `package.json` 仍是 `"private": true` 和版本 `0.6.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
 
 ## 公开工作流
 
@@ -66,7 +66,7 @@ pi install /absolute/path/to/pi-forge-workflow
 固定规划层级：
 
 ```text
-PRD → Delivery Boundary → Issue → Vertical Slice → Micro Task
+PRD → Delivery Boundary → Issue → Vertical Slice → 行为完整 Task
 ```
 
 Forge 将 **Control Root** 与 **Target Repository** 分离。Control Root 保存 `.pi` 配置和 `.forge` Artifact，可以是没有 Git 的多仓库 Workspace；每个 Work Item 选择并冻结一个 Git Working Tree，Issue、Task、Worker、Verification、Audit、Commit 和 Rollback 全部继承该仓库。单仓库项目继续使用两个 Root 相同的退化形式。
@@ -74,7 +74,7 @@ Forge 将 **Control Root** 与 **Target Repository** 分离。Control Root 保�
 - **PRD**：定义完整问题、行为、Acceptance、仓库证据、架构决策和交付边界。
 - **Issue**：精确物化一个已经冻结的 Delivery Boundary。
 - **Slice**：通过权威 Gate 证明一组可观察的 Issue Acceptance。
-- **Micro Task**：一个小型、可独立执行和验证的代码修改包。
+- **Task**：一个行为完整、可独立执行、验证并通常可直接 Commit 的结果；详细微步骤放在 Blueprint 内。
 
 ### 多仓库 Control Workspace
 
@@ -108,7 +108,7 @@ flowchart TD
     I --> DB[确定性 DB-01 → I001 物化]
     DB --> T[forge-tasks]
     T --> FLOW[追踪数据流和 Module Ownership]
-    FLOW --> DAG[Vertical Slice + Micro Task DAG]
+    FLOW --> DAG[Vertical Slice + 行为完整 Task DAG]
     DAG --> PF{独立 Task Preflight}
     PF -->|阻塞| DAG
     PF -->|通过| RUN[forge-run]
@@ -116,11 +116,16 @@ flowchart TD
     RUN --> W[Binding-bound Task Worker]
     W --> H[结构化 Handoff]
     H --> V[权威 Diff + 命令验证]
-    V --> C[Scoped Git Commit + 不可变 Receipt]
+    V --> TC{单一 Task Conformance Audit}
+    TC -->|阻塞| W
+    TC -->|通过| C[Scoped Git Commit + 不可变 Receipt]
     C --> G{Slice Gate}
-    G -->|通过| A{三轴 Final Issue Audit}
+    G -->|通过| AS{冻结 Assurance Profile}
     G -->|失败| RM[Verifier → Planner → Preflight → DAG Amendment]
-    A -->|通过| DONE[Issue 完成]
+    AS -->|Fast| MF[机械 Final Receipt]
+    MF --> DONE[Issue 完成]
+    AS -->|Standard / High| A{三轴 Final Issue Audit}
+    A -->|通过| DONE
     A -->|确认 Blocker| RM
     A -->|歧义或合同变更| HD[Human Decision Gate]
     RM --> W
@@ -188,16 +193,16 @@ Worker 只读取自己的版本化合同，例如：
 tasks/T003/TASK-V001.md
 ```
 
-一个 Task 通常只有：
+一个 Task 通常包含：
 
 - 一个主要 `path#Symbol` Edit Point；
-- 一到两个精确 Reads；
-- 一个主要 Write；
-- 有序、具体的 Implementation Blueprint；
+- 一到三个精确 Reads，以及最多三个不可分离的 Writes；
+- 带稳定 `BP-01...` ID、精确 Instruction 和 Expected Evidence 的有序步骤；
+- Expected Patch Shape、Forbidden Changes 和 Fail-closed Stop Conditions；
 - 明确的 Produces、Consumes、Out of Scope 和 Acceptance Ownership；
 - 聚焦的权威 Verification。
 
-Worker 不读取父 PRD，不重新打开架构决策，不搜索完整调用链，不调用其他 Skill，也不启动嵌套 Subagent。
+一个 Task 可以包含很多详细微步骤，同时仍然是一个行为完整的 Commit 结果。只有结果能够独立实现、验证、Commit、回滚和消费时才拆 Task。Worker 不读取父 PRD，不重新打开架构决策，不搜索完整调用链，不调用其他 Skill，也不启动嵌套 Subagent。
 
 ### 5. Minimal Implementation Policy
 
@@ -230,19 +235,18 @@ Work Item / Issue / Task@Version
 
 ### 7. 权威 Verification 和 Git 集成
 
-Worker 报告的命令结果只是参考。Coordinator 会重新执行所有冻结 Verification Command，比较真实 Git Diff 和声明 Writes，创建 Scoped Commit，然后写入 Receipt。
+Worker 报告的命令结果只是参考。Coordinator 会重新执行所有冻结 Verification Command，执行 `git diff --check`，冻结 Staged Patch Hash，并启动且只启动一个 Binding-bound 只读 Task Conformance Auditor。Auditor 逐项检查 Blueprint Step、Handoff Evidence、Expected Patch Shape、Forbidden Change、正确性、最小性和局部安全性。只有通过且 Patch Hash 未变化的结果才能 Commit 和写入 Receipt。阻塞结果会回滚声明 Writes，并携带不可变 Correction Context 重试同一个冻结 Task，不启动 Issue Remediation Planner。
 
 Commit Subject 严格使用冻结 Task Title。Forge 的内部 ID 只保存在 Receipt 中，不污染产品 Git History。
 
-### 8. 独立 Audit 和有边界的 Remediation
+### 8. 按 Assurance 完成和有边界的 Remediation
 
-Slice Gate 全部通过后，Forge 启动三个独立 Final Issue Audit：
+Slice Gate 全部通过后，冻结在 Runtime 中的 Assurance Profile 决定完成路径：
 
-- **Standards**；
-- **Acceptance / Integration**；
-- **Architecture / Minimality**。
+- **Fast** 仍要求每个 Task 通过一次 Commit 前 Conformance Audit，然后根据已审计的 Task Receipt 和 Slice Gate Evidence 写入机械 Final Receipt并直接完成，不启动 Final Issue Auditor；
+- **Standard** 和 **High Assurance** 保留三个独立 Final Issue Audit：Standards、Acceptance / Integration、Architecture / Minimality。
 
-Blocker 进入受控闭环：
+经过 Audit 的 Blocker 进入受控闭环：
 
 ```text
 Audit Finding
@@ -267,10 +271,12 @@ Audit Finding
 - 通过 `.pi/forge.json` 配置 Model Profile 和 Role Routing。
 - Binding-bound `pi-subagents` Worker、Reviewer、Verifier 和 Planner。
 - Task Contract Freeze 前的独立 Task Preflight。
-- 精确 Task Context 和声明式 Write Boundary。
+- 带稳定 ID、Expected Evidence、Expected Patch Shape、Forbidden Changes 和 Stop Conditions 的决策封闭 Blueprint。
+- 精确 Task Context、声明式 Write Boundary，以及每个 Blueprint Step 的 Handoff Traceability。
+- 一个 Binding-bound Commit 前 Task Conformance Audit，以及有边界的同 Task Correction。
 - 权威 Verification 和 Clean Git Baseline 门禁。
 - Scoped 产品 Commit 与不可变执行 Receipt。
-- Slice Gate Evidence 与三轴 Final Issue Audit。
+- Slice Gate Evidence，以及机械 Fast Completion 或三轴 Final Issue Audit。
 - Additive Remediation 和显式 Human Decision Gate。
 - 幂等提交，以及对中断生命周期事件的恢复。
 
@@ -345,7 +351,7 @@ Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 
 每个冻结 Delivery Boundary 精确生成一个 Local Issue Artifact。
 
-### 4. 生成 Slice 和 Micro Task
+### 4. 生成 Slice 和行为完整 Task
 
 ```text
 /skill:forge-tasks
@@ -354,7 +360,7 @@ Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 Issue: I001
 ```
 
-Forge 追踪实现数据流，生成 Vertical Slice 和详细 Micro Task，并启动独立 Preflight。只有 Preflight 通过后才初始化 Runtime。
+Forge 追踪实现数据流，生成 Vertical Slice 和带详细决策封闭 Blueprint Step 的行为完整 Task，并启动独立 Preflight。只有 Preflight 通过后才初始化 Runtime。
 
 ### 5. 执行和恢复
 
@@ -364,7 +370,7 @@ Forge 追踪实现数据流，生成 Vertical Slice 和详细 Micro Task，并�
 Runtime root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4/issues/I001/runtime
 ```
 
-保持 Pi Interactive Session 运行。`forge-run` 每次只推进 Runtime 允许的下一个动作：启动 Worker、完成 Handoff、验证并 Commit Task、运行 Slice Gate、启动 Final Audit，或者进入 Remediation / Human Decision 恢复路径。
+保持 Pi Interactive Session 运行。`forge-run` 每次只推进 Runtime 允许的下一个动作：启动 Worker、完成 Handoff、验证并 Stage Task、运行单一 Commit 前 Conformance Audit、Commit 未变化的通过 Patch、携带 Correction Context 重试同一 Task、运行 Slice Gate、机械完成 Fast Issue、为 Standard/High Assurance 启动 Final Audit，或者进入 Remediation / Human Decision 恢复路径。
 
 ## 生成的 Artifact
 
@@ -400,6 +406,9 @@ Work Item 目录使用单调递增、不可复用的显示编号 `WI-0001`，因
             ├── bindings/
             ├── receipts/T001-V001.json
             └── audits/
+                └── tasks/T001/
+                    ├── conformance-1-surface.json
+                    └── conformance-1-result.json
 ```
 
 Artifact Root 默认为 `.forge`，通常加入 Git Ignore。这里包含机器相关 Runtime 身份、本地路径、Model Routing 和执行证据；除非经过主动清理，否则不要公开上传生成的 Work Item。

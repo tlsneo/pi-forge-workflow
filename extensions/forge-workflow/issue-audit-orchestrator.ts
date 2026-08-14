@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadForgeConfig, resolveForgeProfile } from "../../src/config/resolver.js";
+import { TaskExecutionService } from "../../src/execution/service.js";
 import { RuntimeService } from "../../src/runtime/service.js";
 import type { IssueAuditAxis, IssueAuditJob } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
@@ -97,6 +98,10 @@ export class IssueAuditOrchestrator {
   async start(runtimeRoot: string, ctx: ExtensionContext): Promise<Array<{ axis: IssueAuditAxis; agentId?: string; status: string }>> {
     const service = new RuntimeService(runtimeRoot);
     const manifest = await service.store.readManifest();
+    if (manifest.assuranceProfile === "fast") {
+      await new TaskExecutionService(runtimeRoot).completeFastIssue();
+      return [];
+    }
     const config = await loadForgeConfig(manifest.controlRoot);
     const route = resolveForgeProfile(config, "issueAudit");
     const model = await resolveExactModel(ctx, route.model);

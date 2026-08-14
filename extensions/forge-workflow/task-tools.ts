@@ -40,7 +40,14 @@ const TaskSchema = Type.Object({
   produces: Type.Array(Type.String()),
   consumes: Type.Array(Type.String()),
   acceptanceIds: Type.Array(Type.String()),
-  implementationBlueprint: Type.Array(Type.String()),
+  implementationBlueprint: Type.Array(Type.Object({
+    id: Type.String(),
+    instruction: Type.String(),
+    expectedEvidence: Type.Array(Type.String()),
+  })),
+  expectedPatchShape: Type.Array(Type.String()),
+  forbiddenChanges: Type.Array(Type.String()),
+  stopConditions: Type.Array(Type.String()),
   outOfScope: Type.Array(Type.String()),
   verification: Type.Array(CommandSchema),
   modelProfile: Type.Optional(Type.String()),
@@ -119,7 +126,7 @@ export function registerTaskTools(pi: ExtensionAPI, preflightOrchestrator: TaskP
   pi.registerTool({
     name: "forge_tasks_submit",
     label: "Forge Tasks Submit",
-    description: "Validate vertical Slices and self-contained Micro Tasks, freeze Task packages and a DAG, and initialize the Issue Runtime",
+    description: "Validate vertical Slices and behavior-complete decision-free Tasks, freeze Task packages and a DAG, and initialize the Issue Runtime",
     parameters: Type.Object({
       workItemRoot: WorkItemRoot,
       issueId: Type.String(),

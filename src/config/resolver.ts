@@ -25,6 +25,10 @@ export async function loadForgeConfig(controlRoot: string): Promise<ForgeConfig>
   }
   const routing = { ...raw.models.routing };
   if (!routing.taskPreflight && routing.taskAudit) routing.taskPreflight = routing.taskAudit;
+  if (!routing.taskConformanceAudit) {
+    const fallback = routing.taskAudit ?? routing["task.simple"] ?? routing.taskPreflight ?? routing.issueAudit;
+    if (fallback) routing.taskConformanceAudit = fallback;
+  }
   for (const deadRoute of ["prdResearch", "optionCandidate", "optionJudge", "optionSynthesizer", "taskAudit"]) delete routing[deadRoute];
   const { tournament: _legacyTournament, ...base } = raw;
   const config: ForgeConfig = { ...base, models: { ...base.models, routing } };

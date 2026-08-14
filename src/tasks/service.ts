@@ -31,10 +31,12 @@ export class TasksService {
   private modelPolicy(config: Awaited<ReturnType<typeof loadForgeConfig>>): ModelPolicy {
     const defaultProfile = config.models.routing["task.medium"] ?? "medium";
     if (!config.models.profiles[defaultProfile]) throw new Error(`Missing default Task model profile: ${defaultProfile}`);
+    const conformanceProfile = config.models.routing.taskConformanceAudit ?? config.models.routing.taskPreflight ?? config.models.routing.issueAudit;
+    if (!conformanceProfile || !config.models.profiles[conformanceProfile]) throw new Error("Missing Task Conformance Audit model profile");
     return {
       defaultProfile,
       profiles: config.models.profiles,
-      roles: { "task-worker": defaultProfile },
+      roles: { "task-worker": defaultProfile, "task-conformance-auditor": conformanceProfile },
     };
   }
 
@@ -187,6 +189,8 @@ export class TasksService {
         repositoryRoot,
         workspaceRoot: repositoryRoot,
         workspaceMode: config.workspace.mode,
+        assuranceProfile: config.review.preset,
+        taskConformanceRequired: true,
         modelPolicy: this.modelPolicy(config),
         modelPolicySource: { configGeneration: config.generation, configHash: stableHash(config) },
       }, dag, slices);

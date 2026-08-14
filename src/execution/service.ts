@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
 import { realpath, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { resolveModelProfile } from "../model/router.js";
+import { stableHash } from "../runtime/hash.js";
 import { RuntimeService } from "../runtime/service.js";
-import type { TaskContract } from "../runtime/types.js";
+import type { TaskConformanceSurface, TaskContract } from "../runtime/types.js";
 
 export interface CommandResult {
   command: string;
@@ -109,7 +111,7 @@ export class TaskExecutionService {
     return this.rollbackAndRetry(taskId, contract, baseline, "Recover interrupted Task before a fresh Binding", maxAttempts);
   }
 
-  async finalizeTask(taskId: string, maxAttempts = 2): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; commit?: string; retried: boolean }> {
+  async finalizeTask(taskId: string, maxAttempts = 2): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; commit?: string; retried: boolean; reviewPending?: boolean }> {
     await this.requireFrozenGitRoot();
     const state = await this.runtime.status();
     const task = state.tasks[taskId];
@@ -148,10 +150,22 @@ export class TaskExecutionService {
         return this.rollbackAndRetry(taskId, contract, baseline, `Verification failed: ${check.command}`, maxAttempts);
       }
     }
+    const staged = await git(manifest.workspaceRoot, ["add", "--", ...actual]);
+    if (staged.exitCode !== 0) return this.blockAfterVerification(taskId, `git add failed before final checks: ${output(staged.stdout, staged.stderr) ?? "unknown error"}`);
+    const diffCheck = await git(manifest.workspaceRoot, ["diff", "--cached", "--check", baseline, "--"]);
+    if (diffCheck.exitCode !== 0) {
+      const reason = `git diff --check failed: ${output(diffCheck.stdout, diffCheck.stderr) ?? "unknown error"}`;
+      await this.runtime.finishVerification(taskId, false, reason, verification);
+      return this.rollbackAndRetry(taskId, contract, baseline, reason, maxAttempts);
+    }
+    verification.push({ command: "git diff --check", exitCode: 0 });
     await this.runtime.finishVerification(taskId, true, undefined, verification);
 
-    const add = await git(manifest.workspaceRoot, ["add", "--", ...actual]);
-    if (add.exitCode !== 0) return this.blockAfterVerification(taskId, `git add failed: ${output(add.stdout, add.stderr) ?? "unknown error"}`);
+    if (manifest.taskConformanceRequired) {
+      const next = await this.prepareTaskConformance(taskId, contract, baseline, actual, verification);
+      return { state: next, retried: false, reviewPending: true };
+    }
+
     const commitSubject = contract.title.trim().split(/\r?\n/, 1)[0];
     if (!commitSubject) return this.blockAfterVerification(taskId, "Task title cannot produce a Git commit subject");
     const commit = await git(manifest.workspaceRoot, ["commit", "-m", commitSubject], 120_000);
@@ -160,6 +174,94 @@ export class TaskExecutionService {
     if (head.exitCode !== 0 || !head.stdout.trim()) return this.blockAfterVerification(taskId, "Unable to read Task commit");
     const next = await this.runtime.completeTask(taskId, head.stdout.trim());
     return { state: next, commit: head.stdout.trim(), retried: false };
+  }
+
+  async continueVerifiedTask(taskId: string): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; reviewPending: boolean }> {
+    await this.requireFrozenGitRoot();
+    const state = await this.runtime.status();
+    const task = state.tasks[taskId];
+    if (!task?.binding || !task.handoff || task.status !== "verifying" || task.verificationStatus !== "passed") {
+      throw new Error(`${taskId} has no verified Task patch to continue`);
+    }
+    const manifest = await this.runtime.store.readManifest();
+    if (!manifest.taskConformanceRequired) throw new Error(`${taskId} legacy completion cannot resume through Task Conformance`);
+    const contract = (await this.runtime.store.readDag()).tasks.find((candidate) => candidate.id === taskId);
+    if (!contract) throw new Error(`Missing Task contract ${taskId}`);
+    const baseline = task.binding.baselineCommit;
+    if (!baseline) throw new Error(`${taskId} Binding has no Git baseline`);
+    const actual = await this.changedFiles(manifest.workspaceRoot, baseline);
+    const staged = await git(manifest.workspaceRoot, ["add", "--", ...actual]);
+    if (staged.exitCode !== 0) throw new Error(`git add failed while recovering ${taskId}: ${output(staged.stdout, staged.stderr) ?? "unknown error"}`);
+    const next = await this.prepareTaskConformance(taskId, contract, baseline, actual, task.authoritativeVerification ?? []);
+    return { state: next, reviewPending: true };
+  }
+
+  async commitAuditedTask(taskId: string): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; commit: string }> {
+    await this.requireFrozenGitRoot();
+    const state = await this.runtime.status();
+    const task = state.tasks[taskId];
+    const job = task?.conformanceJob;
+    if (!task?.binding || !job?.result || job.result.verdict !== "passed" || task.status !== "awaiting_commit") {
+      throw new Error(`${taskId} has no passed Task Conformance Result awaiting commit`);
+    }
+    const manifest = await this.runtime.store.readManifest();
+    const contract = (await this.runtime.store.readDag()).tasks.find((candidate) => candidate.id === taskId);
+    if (!contract) throw new Error(`Missing Task contract ${taskId}`);
+    const baseline = task.binding.baselineCommit;
+    if (!baseline) throw new Error(`${taskId} Binding has no Git baseline`);
+    const actual = await this.changedFiles(manifest.workspaceRoot, baseline);
+    const patchHash = await this.patchHash(manifest.workspaceRoot, baseline, actual);
+    if (patchHash !== job.surface.patchHash || JSON.stringify(sorted(actual)) !== JSON.stringify(sorted(job.surface.changedFiles))) {
+      return this.blockAuditedTask(taskId, `${taskId} working patch changed after Task Conformance Review`);
+    }
+    const head = await git(manifest.workspaceRoot, ["rev-parse", "HEAD"]);
+    if (head.exitCode !== 0 || !head.stdout.trim()) throw new Error(`Unable to read HEAD before committing ${taskId}`);
+    let commitHash = head.stdout.trim();
+    if (commitHash === baseline) {
+      const unstaged = await git(manifest.workspaceRoot, ["diff", "--quiet", "--"]);
+      const untracked = await git(manifest.workspaceRoot, ["ls-files", "--others", "--exclude-standard"]);
+      if (unstaged.exitCode !== 0 || untracked.exitCode !== 0 || untracked.stdout.trim()) {
+        return this.blockAuditedTask(taskId, `${taskId} working tree changed after its staged Task Conformance Surface was frozen`);
+      }
+      const commitSubject = contract.title.trim().split(/\r?\n/, 1)[0];
+      if (!commitSubject) return this.blockAuditedTask(taskId, "Task title cannot produce a Git commit subject");
+      const commit = await git(manifest.workspaceRoot, ["commit", "-m", commitSubject], 120_000);
+      if (commit.exitCode !== 0) return this.blockAuditedTask(taskId, `git commit failed: ${output(commit.stdout, commit.stderr) ?? "unknown error"}`);
+      const committedHead = await git(manifest.workspaceRoot, ["rev-parse", "HEAD"]);
+      if (committedHead.exitCode !== 0 || !committedHead.stdout.trim()) return this.blockAuditedTask(taskId, `Unable to read ${taskId} commit`);
+      commitHash = committedHead.stdout.trim();
+    } else {
+      const parent = await git(manifest.workspaceRoot, ["rev-parse", `${commitHash}^`]);
+      if (parent.exitCode !== 0 || parent.stdout.trim() !== baseline) {
+        return this.blockAuditedTask(taskId, `${taskId} HEAD moved beyond its audited one-commit patch`);
+      }
+      const status = await git(manifest.workspaceRoot, ["status", "--porcelain"]);
+      if (status.exitCode !== 0 || status.stdout.trim()) return this.blockAuditedTask(taskId, `${taskId} crash recovery requires a clean committed audited patch`);
+    }
+    const finalStatus = await git(manifest.workspaceRoot, ["status", "--porcelain"]);
+    if (finalStatus.exitCode !== 0 || finalStatus.stdout.trim()) return this.blockAuditedTask(taskId, `${taskId} audited commit left an unexpected dirty workspace`);
+    return { state: await this.runtime.completeTask(taskId, commitHash), commit: commitHash };
+  }
+
+  async rejectTaskConformance(taskId: string, maxAttempts = 2): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; retried: boolean }> {
+    await this.requireFrozenGitRoot();
+    const state = await this.runtime.status();
+    const task = state.tasks[taskId];
+    const job = task?.conformanceJob;
+    if (!task?.binding || !job?.result || job.result.verdict !== "blocked" || task.status !== "blocked") {
+      throw new Error(`${taskId} has no blocked Task Conformance Result to reject`);
+    }
+    const contract = (await this.runtime.store.readDag()).tasks.find((candidate) => candidate.id === taskId);
+    if (!contract) throw new Error(`Missing Task contract ${taskId}`);
+    const baseline = task.binding.baselineCommit;
+    if (!baseline) throw new Error(`${taskId} Binding has no Git baseline`);
+    const blockers = job.result.findings.filter((finding) => finding.severity === "blocker").map((finding) => finding.id);
+    return this.rollbackAndRetry(taskId, contract, baseline, `Task Conformance blocked: ${blockers.join(", ")}`, maxAttempts);
+  }
+
+  async completeFastIssue(): Promise<Awaited<ReturnType<RuntimeService["status"]>>> {
+    await this.requireCleanWorkspace();
+    return this.runtime.completeFastIssue();
   }
 
   async runReadySliceGates(): Promise<Awaited<ReturnType<RuntimeService["status"]>>> {
@@ -186,7 +288,63 @@ export class TaskExecutionService {
       state = await this.runtime.finishSliceGate(gate.id, !error, verification, error);
       if (error) break;
     }
+    if (state.issueStatus === "auditing" && manifest.assuranceProfile === "fast") {
+      state = await this.completeFastIssue();
+    }
     return state;
+  }
+
+  private async prepareTaskConformance(
+    taskId: string,
+    contract: TaskContract,
+    baseline: string,
+    changedFiles: string[],
+    verification: CommandResult[],
+  ) {
+    const state = await this.runtime.status();
+    const task = state.tasks[taskId];
+    if (!task?.binding || !task.handoff) throw new Error(`${taskId} is missing its Binding or Handoff`);
+    const policy = await this.runtime.activeModelPolicy();
+    const route = resolveModelProfile(policy.policy, { role: "task-conformance-auditor" });
+    const generation = (task.conformanceGeneration ?? 0) + 1;
+    const artifactPath = `audits/tasks/${taskId}/conformance-${generation}-surface.json`;
+    const manifest = await this.runtime.store.readManifest();
+    const patchHash = await this.patchHash(manifest.workspaceRoot, baseline, changedFiles);
+    const createdAt = task.handoff.submittedAt;
+    const surfaceBase = {
+      schemaVersion: 1 as const,
+      workItemId: manifest.workItemId,
+      issueId: manifest.issueId,
+      taskId,
+      taskVersion: contract.version,
+      contractHash: contract.contractHash,
+      workerBindingId: task.binding.id,
+      baselineCommit: baseline,
+      changedFiles: sorted(changedFiles),
+      patchHash,
+      blueprintEvidence: structuredClone(task.handoff.blueprintEvidence ?? []),
+      verification: structuredClone(verification),
+      artifactPath,
+      createdAt,
+    };
+    const surface: TaskConformanceSurface = { ...surfaceBase, surfaceHash: stableHash(surfaceBase) };
+    return this.runtime.createTaskConformanceJob(taskId, surface, {
+      model: route.model,
+      thinking: route.thinking,
+      maxTurns: route.maxTurns,
+      modelPolicyGeneration: policy.generation,
+    });
+  }
+
+  private async patchHash(cwd: string, baseline: string, changedFiles: string[]): Promise<string> {
+    const head = await git(cwd, ["rev-parse", "HEAD"]);
+    if (head.exitCode !== 0 || !head.stdout.trim()) throw new Error("Unable to read HEAD while hashing the Task patch");
+    const args = head.stdout.trim() === baseline
+      ? ["diff", "--cached", "--binary", "--no-ext-diff", baseline, "--"]
+      : ["diff", "--binary", "--no-ext-diff", baseline, head.stdout.trim(), "--"];
+    const diff = await git(cwd, args);
+    if (diff.exitCode !== 0) throw new Error(output(diff.stdout, diff.stderr) ?? "git diff failed");
+    return stableHash({ changedFiles: sorted(changedFiles), patch: diff.stdout });
   }
 
   private async changedFiles(cwd: string, baseline: string): Promise<string[]> {
@@ -224,6 +382,11 @@ export class TaskExecutionService {
       ?? ((task?.binding?.modelPolicyGeneration ?? 1) === activePolicyGeneration ? task?.attempt ?? 0 : 0);
     if (attemptsInActivePolicy >= maxAttempts) return { state: await this.runtime.blockTask(taskId, reason), retried: false as const };
     return { state: await this.runtime.retryTask(taskId, reason), retried: true as const };
+  }
+
+  private async blockAuditedTask(taskId: string, reason: string): Promise<never> {
+    await this.runtime.blockTask(taskId, reason);
+    throw new Error(reason);
   }
 
   private async blockAfterVerification(taskId: string, reason: string) {

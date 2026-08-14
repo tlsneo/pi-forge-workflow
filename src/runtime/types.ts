@@ -5,6 +5,9 @@ export const TASK_STATUSES = [
   "running",
   "awaiting_verification",
   "verifying",
+  "awaiting_review",
+  "reviewing",
+  "awaiting_commit",
   "completed",
   "interrupted",
   "retry_ready",
@@ -20,7 +23,19 @@ export type HandoffStatus = "none" | "valid" | "invalid";
 export type VerificationStatus = "not_run" | "running" | "passed" | "failed";
 export type GitStatus = "not_started" | "committed" | "receipted" | "merged";
 export type IssueStatus = "planned" | "executing" | "integrating" | "auditing" | "completed" | "blocked" | "needs_user" | "failed";
+export type AssuranceProfile = "fast" | "standard" | "high-assurance";
 export type ThinkingLevel = string;
+
+export interface TaskBlueprintStep {
+  id: string;
+  instruction: string;
+  expectedEvidence: string[];
+}
+
+export interface TaskBlueprintEvidence {
+  stepId: string;
+  evidence: string[];
+}
 
 export interface TaskContract {
   id: string;
@@ -30,7 +45,10 @@ export interface TaskContract {
   goal?: string;
   editPoint?: { path: string; symbol: string };
   reads?: Array<{ path: string; symbol: string; reason: string }>;
-  implementationBlueprint?: string[];
+  implementationBlueprint?: Array<TaskBlueprintStep | string>;
+  expectedPatchShape?: string[];
+  forbiddenChanges?: string[];
+  stopConditions?: string[];
   outOfScope?: string[];
   dependencies: string[];
   conflicts: string[];
@@ -89,6 +107,8 @@ export interface RuntimeManifest {
   repositoryRoot: string;
   workspaceRoot: string;
   workspaceMode: "shared-serial";
+  assuranceProfile: AssuranceProfile;
+  taskConformanceRequired: boolean;
   issueModelProfile?: string;
   auditModelProfile?: string;
   modelPolicy: ModelPolicy;
@@ -129,7 +149,96 @@ export interface TaskHandoff {
   changedFiles: string[];
   verification: Array<{ command: string; exitCode: number; keyOutput?: string }>;
   produced: string[];
+  blueprintEvidence?: TaskBlueprintEvidence[];
   submittedAt: string;
+}
+
+export type TaskConformanceVerdict = "passed" | "blocked";
+export type TaskConformanceJobStatus = "pending" | "starting" | "running" | "passed" | "blocked" | "interrupted" | "retry_ready" | "failed";
+
+export interface TaskConformanceFinding {
+  id: string;
+  severity: "blocker" | "warning" | "note";
+  message: string;
+  evidence: string[];
+  blueprintStepIds: string[];
+  violatedRule: string;
+  verification: string;
+  suggestedResolution: string;
+}
+
+export interface TaskConformanceSurface {
+  schemaVersion: 1;
+  workItemId: string;
+  issueId: string;
+  taskId: string;
+  taskVersion: number;
+  contractHash: string;
+  workerBindingId: string;
+  baselineCommit: string;
+  changedFiles: string[];
+  patchHash: string;
+  blueprintEvidence: TaskBlueprintEvidence[];
+  verification: Array<{ command: string; exitCode: number; keyOutput?: string }>;
+  surfaceHash: string;
+  artifactPath: string;
+  createdAt: string;
+}
+
+export interface TaskConformanceBinding {
+  id: string;
+  workItemId: string;
+  issueId: string;
+  taskId: string;
+  taskVersion: number;
+  contractHash: string;
+  surfaceHash: string;
+  attempt: number;
+  spawnRequestId: string;
+  agentId?: string;
+  model: string;
+  thinking: ThinkingLevel;
+  maxTurns: number;
+  startedGeneration: number;
+  createdAt: string;
+}
+
+export interface TaskConformanceResult {
+  schemaVersion: 1;
+  workItemId: string;
+  issueId: string;
+  taskId: string;
+  taskVersion: number;
+  contractHash: string;
+  surfaceHash: string;
+  bindingId: string;
+  verdict: TaskConformanceVerdict;
+  findings: TaskConformanceFinding[];
+  resultHash: string;
+  artifactPath: string;
+  submittedAt: string;
+}
+
+export interface TaskConformanceJob {
+  id: string;
+  generation: number;
+  status: TaskConformanceJobStatus;
+  attempt: number;
+  maxAttempts: number;
+  model: string;
+  thinking: ThinkingLevel;
+  maxTurns: number;
+  modelPolicyGeneration: number;
+  surface: TaskConformanceSurface;
+  binding?: TaskConformanceBinding;
+  result?: TaskConformanceResult;
+  error?: string;
+}
+
+export interface TaskCorrectionContext {
+  resultHash: string;
+  resultPath: string;
+  findingIds: string[];
 }
 
 export interface TaskReceipt {
@@ -145,7 +254,14 @@ export interface TaskReceipt {
   commit: string;
   changedFiles: string[];
   produced: string[];
+  blueprintEvidence?: TaskBlueprintEvidence[];
   verification: Array<{ command: string; exitCode: number; keyOutput?: string }>;
+  conformance?: {
+    surfaceHash: string;
+    bindingId: string;
+    resultHash: string;
+    resultPath: string;
+  };
   completedAt: string;
 }
 
@@ -161,6 +277,9 @@ export interface TaskState {
   verificationStatus: VerificationStatus;
   authoritativeVerification?: Array<{ command: string; exitCode: number; keyOutput?: string }>;
   verificationError?: string;
+  conformanceGeneration?: number;
+  conformanceJob?: TaskConformanceJob;
+  correctionContext?: TaskCorrectionContext;
   gitStatus: GitStatus;
   checkpoint?: TaskCheckpoint;
   receipt?: TaskReceipt;

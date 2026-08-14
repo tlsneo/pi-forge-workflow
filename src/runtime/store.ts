@@ -107,11 +107,7 @@ export class RuntimeStore {
   }
 
   async readManifest(): Promise<RuntimeManifest> {
-    const raw = JSON.parse(await readFile(this.manifestPath, "utf8")) as RuntimeManifest & {
-      workItemId?: string;
-      controlRoot?: string;
-      repositoryRoot?: string;
-    };
+    const raw = JSON.parse(await readFile(this.manifestPath, "utf8")) as Omit<RuntimeManifest, "workItemId" | "controlRoot" | "repositoryRoot" | "assuranceProfile" | "taskConformanceRequired"> & Partial<Pick<RuntimeManifest, "workItemId" | "controlRoot" | "repositoryRoot" | "assuranceProfile" | "taskConformanceRequired">>;
     const workItemManifestPath = join(this.root, "..", "..", "..", "runtime", "manifest.json");
     let workItem: { workItemId?: string; controlRoot?: string; repositoryRoot?: string } | undefined;
     if (await pathExists(workItemManifestPath)) {
@@ -122,6 +118,8 @@ export class RuntimeStore {
       workItemId: raw.workItemId ?? workItem?.workItemId ?? `legacy:${raw.issueId}`,
       controlRoot: raw.controlRoot ?? workItem?.controlRoot ?? workItem?.repositoryRoot ?? raw.workspaceRoot,
       repositoryRoot: raw.repositoryRoot ?? workItem?.repositoryRoot ?? raw.workspaceRoot,
+      assuranceProfile: raw.assuranceProfile ?? "standard",
+      taskConformanceRequired: raw.taskConformanceRequired ?? false,
     };
   }
 
@@ -178,7 +176,7 @@ export class RuntimeStore {
   async rebindModelPolicy(input: { configGeneration: number; configHash: string; policy: ModelPolicy; reason: string }): Promise<{ state: IssueRuntimeState; policy: RuntimeModelPolicyGeneration; idempotent: boolean }> {
     return this.withLock(async () => {
       const current = await this.readState();
-      const activeTasks = Object.values(current.tasks).filter((task) => ["starting", "running", "awaiting_verification", "verifying"].includes(task.status));
+      const activeTasks = Object.values(current.tasks).filter((task) => ["starting", "running", "awaiting_verification", "verifying", "awaiting_review", "reviewing", "awaiting_commit"].includes(task.status));
       if (activeTasks.length > 0) throw new Error(`Cannot rebind Model Policy while Tasks are active: ${activeTasks.map((task) => task.id).join(", ")}`);
       const active = await this.readActiveModelPolicy();
       const policyHash = stableHash(input.policy);
@@ -328,6 +326,21 @@ export class RuntimeStore {
     const path = join(this.root, "audits", `${auditId}.json`);
     if (await pathExists(path)) throw new Error(`Audit receipt already exists: ${auditId}`);
     await atomicWriteJson(path, receipt);
+  }
+
+  async writeTaskConformanceArtifact(relativePath: string, artifact: unknown): Promise<void> {
+    const path = join(this.root, relativePath);
+    if (await pathExists(path)) {
+      const existing = JSON.parse(await readFile(path, "utf8")) as unknown;
+      if (stableHash(existing) === stableHash(artifact)) return;
+      throw new Error(`Task Conformance artifact already exists with different content: ${relativePath}`);
+    }
+    await atomicWriteJson(path, artifact);
+  }
+
+  async readTaskConformanceArtifact<T>(relativePath: string): Promise<T | undefined> {
+    const path = join(this.root, relativePath);
+    return await pathExists(path) ? JSON.parse(await readFile(path, "utf8")) as T : undefined;
   }
 
   async withLock<T>(operation: () => Promise<T>): Promise<T> {

@@ -164,7 +164,7 @@ async function scanRepository(pi: ExtensionAPI, ctx: ExtensionContext, adapter: 
         "task.simple": "simple", "task.medium": "medium", "task.complex": "complex",
         interactiveExplore: "simple", interactivePlan: "complex",
         prdCoverageReview: "audit", prdEvidenceReview: "audit", prdArchitectureReview: "audit",
-        blockerVerifier: "verifier", taskPreflight: "audit", remediationPlanner: "complex", issueAudit: "audit",
+        blockerVerifier: "verifier", taskPreflight: "audit", taskConformanceAudit: "simple", remediationPlanner: "complex", issueAudit: "audit",
       },
     },
     review: {
@@ -173,7 +173,7 @@ async function scanRepository(pi: ExtensionAPI, ctx: ExtensionContext, adapter: 
       blockerVerification: { profile: "verifier", requireDifferentModel: true },
     },
     commands,
-    agents: { directory: await pathExists(join(controlRoot, ".agents", "agents")) ? ".agents/agents" : ".pi/agents", templateVersion: 2 },
+    agents: { directory: await pathExists(join(controlRoot, ".agents", "agents")) ? ".agents/agents" : ".pi/agents", templateVersion: 3 },
     instructions: { file: instructionSelection.selectedFile, managedSection: "forge-workflow", templateVersion: 1 },
     repositoryContext: discoveredRepositoryContext,
   };

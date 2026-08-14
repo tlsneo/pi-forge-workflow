@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { TaskExecutionService } from "../../src/execution/service.js";
 import { resolveModelProfile } from "../../src/model/router.js";
 import { RuntimeService } from "../../src/runtime/service.js";
-import type { IssueAuditAxis, IssueAuditFinding, TaskContract, TaskHandoff } from "../../src/runtime/types.js";
+import type { IssueAuditAxis, IssueAuditFinding, TaskConformanceFinding, TaskContract, TaskHandoff } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
 import { AuditRemediationOrchestrator } from "./audit-remediation-orchestrator.js";
 import { registerInitTools } from "./init-tools.js";
@@ -13,6 +13,7 @@ import { IssueAuditOrchestrator } from "./issue-audit-orchestrator.js";
 import { registerIssueTools } from "./issue-tools.js";
 import { PrdReviewOrchestrator } from "./prd-review-orchestrator.js";
 import { registerPrdTools } from "./prd-tools.js";
+import { TaskConformanceOrchestrator } from "./task-conformance-orchestrator.js";
 import { TaskPreflightOrchestrator } from "./task-preflight-orchestrator.js";
 import { registerTaskTools } from "./task-tools.js";
 
@@ -61,6 +62,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
   const adapter = new PiSubagentsAdapter(pi.events);
   const prdReviewOrchestrator = new PrdReviewOrchestrator(adapter);
   const issueAuditOrchestrator = new IssueAuditOrchestrator(adapter);
+  const taskConformanceOrchestrator = new TaskConformanceOrchestrator(adapter);
   const taskPreflightOrchestrator = new TaskPreflightOrchestrator(adapter);
   const auditRemediationOrchestrator = new AuditRemediationOrchestrator(adapter);
   registerInitTools(pi, adapter);
@@ -108,6 +110,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
 
   async function indexRuntime(runtimeRoot: string): Promise<RuntimeService> {
     const service = new RuntimeService(runtimeRoot);
+    await taskConformanceOrchestrator.index(runtimeRoot);
     const state = await service.status();
     for (const task of Object.values(state.tasks)) {
       if (!task.binding) continue;
@@ -149,6 +152,10 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
     if (task?.handoffStatus !== "valid") return;
     const execution = new TaskExecutionService(location.runtimeRoot);
     const result = await execution.finalizeTask(location.taskId);
+    if (result.reviewPending) {
+      if (extensionContext) await taskConformanceOrchestrator.start(location.runtimeRoot, location.taskId, extensionContext);
+      return;
+    }
     if (!result.commit) return;
     const integrated = await execution.runReadySliceGates();
     if (!extensionContext) return;
@@ -193,6 +200,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
     });
     const model = await resolveExactModel(ctx, route.model);
     const state = await service.status();
+    const correctionContext = state.tasks[taskId]?.correctionContext;
     const baselineCommit = await new TaskExecutionService(runtimeRoot).requireCleanWorkspace();
     const taskContractPath = `tasks/${taskId}/TASK-V${String(taskVersion).padStart(3, "0")}.md`;
     const binding = RuntimeService.createBinding({
@@ -223,7 +231,8 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       `Contract hash: ${contract.contractHash}`,
       `Frozen Task contract: ${taskPath}`,
       `Task identity: ${binding.workItemId}/${binding.issueId}/${binding.taskId}@V${String(binding.taskVersion).padStart(3, "0")}`,
-      "Call task_resume before any other workflow action. Follow the frozen Implementation Blueprint, checkpoint progress, submit task_handoff once, then stop.",
+      ...(correctionContext ? [`Frozen Correction Context: ${join(runtimeRoot, correctionContext.resultPath)}`] : []),
+      "Call task_resume before any other workflow action. Execute every frozen BP-xx Step in order, checkpoint progress, submit task_handoff once with Evidence for every Step, then stop.",
     ].join("\n");
 
     try {
@@ -284,8 +293,8 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "run_task_frontier",
     label: "Run Task Frontier",
-    description: "Deterministically claim and spawn the next eligible Micro Task through pi-subagents",
-    promptSnippet: "Claim and start the next ready Micro Task from a finalized Runtime",
+    description: "Deterministically claim and spawn the next eligible behavior-complete Task through pi-subagents",
+    promptSnippet: "Claim and start the next ready Task from a finalized Runtime",
     parameters: Type.Object({ runtimeRoot: RuntimeRoot }),
     async execute(_id, params, signal, _update, ctx) {
       return startFrontier(normalizeRoot(ctx.cwd, params.runtimeRoot), signal, ctx);
@@ -310,16 +319,29 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "forge_run_continue",
     label: "Forge Run Continue",
-    description: "Finalize any submitted Handoff, run ready Slice Gates, or claim and spawn the next deterministic Micro Task",
+    description: "Finalize a Handoff, verify and review a staged Task patch, commit a passed Task, run Slice Gates, or spawn the next deterministic Task",
     parameters: Type.Object({ runtimeRoot: RuntimeRoot }),
     async execute(_id, params, signal, _update, ctx) {
       const runtimeRoot = normalizeRoot(ctx.cwd, params.runtimeRoot);
       const service = await indexRuntime(runtimeRoot);
+      const manifest = await service.store.readManifest();
       let state = await service.status();
       const execution = new TaskExecutionService(runtimeRoot);
       for (const task of Object.values(state.tasks)) {
         if (task.receipt && (task.status !== "completed" || task.gitStatus !== "receipted" || task.verificationStatus !== "passed" || task.verificationError || task.blocker)) {
           await execution.reconcileTaskReceipt(task.id);
+          state = await service.status();
+        }
+      }
+      for (const task of Object.values(state.tasks)) {
+        if (task.status === "blocked" && task.conformanceJob?.result?.verdict === "blocked") {
+          await execution.rejectTaskConformance(task.id);
+          state = await service.status();
+        }
+      }
+      for (const task of Object.values(state.tasks)) {
+        if (task.status === "awaiting_commit" && task.conformanceJob?.result?.verdict === "passed") {
+          await execution.commitAuditedTask(task.id);
           state = await service.status();
         }
       }
@@ -334,9 +356,26 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         }
       }
       for (const task of Object.values(state.tasks)) {
+        if (manifest.taskConformanceRequired && task.status === "verifying" && task.verificationStatus === "passed" && !task.conformanceJob) {
+          const recovered = await execution.continueVerifiedTask(task.id);
+          state = recovered.state;
+          const review = await taskConformanceOrchestrator.start(runtimeRoot, task.id, ctx);
+          return text(`Recovered the verified patch and started the single pre-commit Task Conformance Audit for ${task.id}.`, { runtimeRoot, taskId: task.id, state, review });
+        }
         if (task.status === "awaiting_verification" && task.handoffStatus === "valid" && ["completed", "failed", "stopped", "aborted"].includes(task.agentStatus)) {
-          await execution.finalizeTask(task.id);
+          const finalized = await execution.finalizeTask(task.id);
           state = await service.status();
+          if (finalized.reviewPending) {
+            const review = await taskConformanceOrchestrator.start(runtimeRoot, task.id, ctx);
+            return text(`Started the single pre-commit Task Conformance Audit for ${task.id}.`, { runtimeRoot, taskId: task.id, state, review });
+          }
+        }
+      }
+      for (const task of Object.values(state.tasks)) {
+        const recoverableUnboundSpawn = task.status === "reviewing" && task.conformanceJob?.status === "starting" && !task.conformanceJob.binding?.agentId;
+        if (task.conformanceJob && ((task.status === "awaiting_review" && ["pending", "retry_ready", "interrupted"].includes(task.conformanceJob.status)) || recoverableUnboundSpawn)) {
+          const review = await taskConformanceOrchestrator.start(runtimeRoot, task.id, ctx);
+          return text(`Started the single pre-commit Task Conformance Audit for ${task.id}.`, { runtimeRoot, taskId: task.id, state: await service.status(), review });
         }
       }
       state = await execution.runReadySliceGates();
@@ -352,6 +391,58 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         return text(`Started ${auditSpawns.filter((spawn) => spawn.status === "started").length} final Issue Auditors.`, { runtimeRoot, frontier, state, auditSpawns });
       }
       return text(`Issue ${state.issueId} is ${state.issueStatus}; no Task is currently spawnable.`, { runtimeRoot, frontier, state });
+    },
+  });
+
+  pi.registerTool({
+    name: "forge_run_task_conformance_submit",
+    label: "Forge Run Task Conformance Submit",
+    description: "Submit one Binding-bound pre-commit Task Conformance result and either commit the audited Task or schedule the same frozen Task for correction",
+    parameters: Type.Object({
+      runtimeRoot: RuntimeRoot,
+      bindingId: Type.String(),
+      surfaceHash: Type.String(),
+      verdict: Type.Union([Type.Literal("passed"), Type.Literal("blocked")]),
+      findings: Type.Array(Type.Object({
+        id: Type.String(),
+        severity: Type.Union([Type.Literal("blocker"), Type.Literal("warning"), Type.Literal("note")]),
+        message: Type.String(),
+        evidence: Type.Array(Type.String()),
+        blueprintStepIds: Type.Array(Type.String()),
+        violatedRule: Type.String(),
+        verification: Type.String(),
+        suggestedResolution: Type.String(),
+      })),
+    }),
+    async execute(_id, params, _signal, _update, ctx) {
+      const runtimeRoot = normalizeRoot(ctx.cwd, params.runtimeRoot);
+      const service = await indexRuntime(runtimeRoot);
+      let state = await service.submitTaskConformance(params.bindingId, params.surfaceHash, params.verdict, params.findings as TaskConformanceFinding[]);
+      const location = await service.locateTaskConformance(params.bindingId);
+      const task = location ? state.tasks[location.taskId] : undefined;
+      if (!task || !location?.result) throw new Error(`Unknown Task Conformance Binding after submission: ${params.bindingId}`);
+      const alreadyResolved = params.verdict === "passed"
+        ? task.receipt?.conformance?.bindingId === params.bindingId
+        : task.correctionContext?.resultHash === location.result.resultHash && !(task.status === "blocked" && task.conformanceJob?.binding?.id === params.bindingId);
+      if (alreadyResolved) {
+        return { ...text(`${task.id} Task Conformance Result was already applied idempotently.`, { runtimeRoot, taskId: task.id, state, idempotent: true }), terminate: true };
+      }
+      const execution = new TaskExecutionService(runtimeRoot);
+      const resolution = params.verdict === "passed"
+        ? await execution.commitAuditedTask(task.id)
+        : await execution.rejectTaskConformance(task.id);
+      state = await execution.runReadySliceGates();
+      const frontier = await service.frontier();
+      let continuation: unknown;
+      if (frontier.length > 0) continuation = await startFrontier(runtimeRoot, undefined, ctx);
+      else if (state.remediationPlan?.source === "slice_gate" && state.remediationPlan.status === "awaiting_proposal") continuation = await auditRemediationOrchestrator.startPlanner(runtimeRoot, ctx);
+      else if (state.issueStatus === "auditing") continuation = await issueAuditOrchestrator.start(runtimeRoot, ctx);
+      const message = params.verdict === "passed"
+        ? `${task.id} passed Task Conformance and was committed with an immutable Receipt.`
+        : "retried" in resolution && resolution.retried
+          ? `${task.id} failed Task Conformance; the staged patch was rolled back and the same frozen Task was scheduled for a Correction Attempt.`
+          : `${task.id} failed Task Conformance and exhausted its bounded Worker attempts.`;
+      return { ...text(message, { runtimeRoot, taskId: task.id, state: await service.status(), resolution, continuation: continuation ?? null }), terminate: true };
     },
   });
 
@@ -424,7 +515,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "forge_run_remediation_propose",
     label: "Forge Run Remediation Propose",
-    description: "Submit a Binding-bound Remediation Micro Task Proposal for confirmed final Audit Findings and start independent Preflight",
+    description: "Submit a Binding-bound behavior-complete Remediation Task Proposal for confirmed final Audit Findings and start independent Preflight",
     parameters: Type.Object({
       runtimeRoot: RuntimeRoot,
       bindingId: Type.String(),
@@ -434,7 +525,8 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         reads: Type.Array(Type.Object({ path: Type.String(), symbol: Type.String(), reason: Type.String() })),
         writes: Type.Array(Type.String()), dependencies: Type.Array(Type.String()), conflicts: Type.Array(Type.String()),
         produces: Type.Array(Type.String()), consumes: Type.Array(Type.String()), acceptanceIds: Type.Array(Type.String()),
-        implementationBlueprint: Type.Array(Type.String()), outOfScope: Type.Array(Type.String()),
+        implementationBlueprint: Type.Array(Type.Object({ id: Type.String(), instruction: Type.String(), expectedEvidence: Type.Array(Type.String()) })),
+        expectedPatchShape: Type.Array(Type.String()), forbiddenChanges: Type.Array(Type.String()), stopConditions: Type.Array(Type.String()), outOfScope: Type.Array(Type.String()),
         verification: Type.Array(Type.Object({ command: Type.String(), timeoutMs: Type.Integer() })),
         modelProfile: Type.Optional(Type.String()),
       })),
@@ -464,7 +556,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
     async execute(_id, params, _signal, _update, ctx) {
       const runtimeRoot = normalizeRoot(ctx.cwd, params.runtimeRoot);
       const result = await auditRemediationOrchestrator.submitPreflight(runtimeRoot, params.bindingId, params.proposalHash, params.verdict, params.findings);
-      return { ...text(result.status === "applied" ? `Remediation passed Preflight and appended DAG Generation ${result.state.dagGeneration}.` : "Remediation Preflight blocked the Proposal; Planner must submit a smaller corrected Proposal.", { runtimeRoot, ...result }), terminate: true };
+      return { ...text(result.status === "applied" ? `Remediation passed Preflight and appended DAG Generation ${result.state.dagGeneration}.` : "Remediation Preflight blocked the Proposal; Planner must submit a corrected behavior-complete Proposal.", { runtimeRoot, ...result }), terminate: true };
     },
   });
 
@@ -531,7 +623,8 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       const service = await indexRuntime(runtimeRoot);
       const { task } = await service.resumeTask(params.bindingId);
       const taskPath = join(dirname(runtimeRoot), task.binding!.taskContractPath);
-      return text(`Binding valid. Read ${taskPath}. Next action: ${task.checkpoint?.nextAction ?? "start the Implementation Blueprint"}.`, {
+      const correctionPath = task.correctionContext ? join(runtimeRoot, task.correctionContext.resultPath) : undefined;
+      return text(`Binding valid. Read ${taskPath}${correctionPath ? ` and frozen Correction Context ${correctionPath}` : ""}. Next action: ${task.checkpoint?.nextAction ?? "start BP-01"}.`, {
         runtimeRoot,
         workItemId: task.binding!.workItemId,
         issueId: task.binding!.issueId,
@@ -539,6 +632,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         taskVersion: task.binding!.taskVersion,
         taskPath,
         contractHash: task.binding!.contractHash,
+        correctionPath: correctionPath ?? null,
         checkpoint: task.checkpoint ?? null,
       });
     },
@@ -582,6 +676,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         keyOutput: Type.Optional(Type.String()),
       })),
       produced: Type.Array(Type.String()),
+      blueprintEvidence: Type.Array(Type.Object({ stepId: Type.String(), evidence: Type.Array(Type.String()) })),
     }),
     async execute(_id, params, _signal, _update, ctx) {
       const runtimeRoot = normalizeRoot(ctx.cwd, params.runtimeRoot);
@@ -589,9 +684,10 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         changedFiles: params.changedFiles,
         verification: params.verification,
         produced: params.produced,
+        blueprintEvidence: params.blueprintEvidence,
       };
       const state = await new RuntimeService(runtimeRoot).submitHandoff(params.bindingId, handoff);
-      return { ...text("Handoff accepted; waiting for the agent to stop and authoritative verification.", { state }), terminate: true };
+      return { ...text("Handoff accepted; waiting for the Worker to stop, authoritative verification, and the single pre-commit Task Conformance Audit.", { state }), terminate: true };
     },
   });
 

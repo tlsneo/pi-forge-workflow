@@ -1,6 +1,6 @@
 import type { ForgeConfig } from "../config/types.js";
 import type { IssueArtifact } from "../issues/types.js";
-import type { TaskContract, TaskDag } from "../runtime/types.js";
+import type { TaskBlueprintStep, TaskContract, TaskDag } from "../runtime/types.js";
 
 export interface SliceDraft {
   id: string;
@@ -24,7 +24,10 @@ export interface MicroTaskDraft {
   produces: string[];
   consumes: string[];
   acceptanceIds: string[];
-  implementationBlueprint: string[];
+  implementationBlueprint: Array<TaskBlueprintStep | string>;
+  expectedPatchShape: string[];
+  forbiddenChanges: string[];
+  stopConditions: string[];
   outOfScope: string[];
   verification: Array<{ command: string; timeoutMs: number }>;
   modelProfile?: string;

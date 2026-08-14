@@ -1,5 +1,7 @@
 # Forge Task Plan contract
 
+A Task is one behavior-complete result. Put detailed implementation micro-steps inside its ordered Blueprint instead of creating one Runtime Task for each step.
+
 ```json
 {
   "workItemRoot": "/repo/.forge/work-items/example",
@@ -10,12 +12,12 @@
       "title": "Timeout behavior",
       "goal": "Prove explicit and omitted timeout behavior through the client seam.",
       "acceptanceIds": ["AC-01"],
-      "taskIds": ["T001", "T002"],
+      "taskIds": ["T001"],
       "gate": [
         {
-          "command": "npm test",
+          "command": "npm test -- timeout",
           "timeoutMs": 120000,
-          "proves": "The Slice Acceptance passes through the public behavior seam"
+          "proves": "Explicit and omitted timeout behavior pass through the public client seam"
         }
       ]
     }
@@ -23,52 +25,67 @@
   "tasks": [
     {
       "id": "T001",
-      "title": "Carry timeout through AppConfig",
+      "title": "Carry timeout through the client configuration seam",
       "sliceId": "S001",
-      "goal": "Expose timeoutMs at the existing configuration seam.",
+      "goal": "Expose, consume, and verify timeoutMs without changing omission behavior.",
       "editPoint": { "path": "src/config.ts", "symbol": "AppConfig" },
       "reads": [
-        { "path": "src/config.ts", "symbol": "AppConfig", "reason": "Defines the configuration contract and factory literal" }
+        { "path": "src/config.ts", "symbol": "AppConfig", "reason": "Defines the configuration contract and factory literal" },
+        { "path": "src/client.ts", "symbol": "createClient", "reason": "Consumes the existing AppConfig value" },
+        { "path": "src/client.test.ts", "symbol": "timeout behavior", "reason": "Existing focused assertion seam" }
       ],
-      "writes": ["src/config.ts"],
+      "writes": ["src/config.ts", "src/client.ts", "src/client.test.ts"],
       "dependencies": [],
       "conflicts": [],
-      "produces": ["AppConfig timeout contract"],
+      "produces": ["AC-01 timeout behavior"],
       "consumes": [],
       "acceptanceIds": ["AC-01"],
       "implementationBlueprint": [
-        "Add timeoutMs to AppConfig using the frozen unit and omission semantics.",
-        "Set the value in the existing factory without introducing another configuration object."
+        {
+          "id": "BP-01",
+          "instruction": "Add readonly timeoutMs using the frozen unit immediately after retries in AppConfig.",
+          "expectedEvidence": ["src/config.ts#AppConfig field diff"]
+        },
+        {
+          "id": "BP-02",
+          "instruction": "Populate timeoutMs in the existing createConfig object literal without introducing another configuration object.",
+          "expectedEvidence": ["src/config.ts#createConfig literal diff"]
+        },
+        {
+          "id": "BP-03",
+          "instruction": "Read timeoutMs from AppConfig at the existing createClient request construction seam and leave the omitted branch unchanged.",
+          "expectedEvidence": ["src/client.ts#createClient request diff", "Omitted branch remains present"]
+        },
+        {
+          "id": "BP-04",
+          "instruction": "Extend the existing timeout test with one explicit-value assertion and one omission assertion; do not create a second suite.",
+          "expectedEvidence": ["src/client.test.ts#timeout behavior assertions"]
+        },
+        {
+          "id": "BP-05",
+          "instruction": "Run the frozen focused verification command and preserve its bounded output for Handoff.",
+          "expectedEvidence": ["npm test -- timeout exits 0"]
+        }
       ],
-      "outOfScope": ["Changing retry behavior"],
+      "expectedPatchShape": [
+        "One AppConfig field and factory literal update in src/config.ts",
+        "One existing request-construction update in src/client.ts",
+        "Focused explicit and omitted assertions in the existing timeout test"
+      ],
+      "forbiddenChanges": [
+        "No retry behavior change",
+        "No fallback or default timeout substitution",
+        "No transport abstraction, feature flag, or second configuration object",
+        "No unrelated rename, formatting, or cleanup"
+      ],
+      "stopConditions": [
+        "Stop if AppConfig, createConfig, createClient, or the existing timeout test seam is absent",
+        "Stop if implementing the behavior requires another public Interface or Write path",
+        "Stop if omission behavior differs from the frozen Issue contract"
+      ],
+      "outOfScope": ["Changing retry behavior", "Adding transport configuration"],
       "verification": [
-        { "command": "npm test", "timeoutMs": 120000 }
-      ],
-      "modelProfile": "simple"
-    },
-    {
-      "id": "T002",
-      "title": "Apply and verify timeout",
-      "sliceId": "S001",
-      "goal": "Consume the frozen configuration artifact at the client test seam.",
-      "editPoint": { "path": "src/client.test.ts", "symbol": "timeout behavior" },
-      "reads": [
-        { "path": "src/client.ts", "symbol": "createClient", "reason": "Consumes AppConfig" },
-        { "path": "src/client.test.ts", "symbol": "client tests", "reason": "Existing assertion seam" }
-      ],
-      "writes": ["src/client.test.ts"],
-      "dependencies": ["T001"],
-      "conflicts": [],
-      "produces": ["AC-01 verification"],
-      "consumes": ["T001::AppConfig timeout contract"],
-      "acceptanceIds": ["AC-01"],
-      "implementationBlueprint": [
-        "Add the focused assertion at the existing client seam.",
-        "Prove explicit timeout and preserve the frozen omission behavior."
-      ],
-      "outOfScope": ["Adding a transport abstraction"],
-      "verification": [
-        { "command": "npm test", "timeoutMs": 120000 }
+        { "command": "npm test -- timeout", "timeoutMs": 120000 }
       ],
       "modelProfile": "simple"
     }
@@ -78,4 +95,6 @@
 
 Before constructing this payload, trace one ordered implementation flow: entry/input boundary → normalization or transformation → owning Module → downstream consumer/side effect → observable Test Seam. Every hop names an exact `path#Symbol`, value/artifact, and changed or unchanged branch. Tasks follow that real flow. Every dependency must have a matching `Consumes` entry and the producer must declare the exact artifact in `Produces`; preferred coding order is not a dependency. Paths are repository-relative. Verification timeout is between 1 second and 30 minutes.
 
-Prefer many small, useful commits without fragmenting ownership. A Task normally reads one or two exact symbols and writes one primary file. Keep app entry points and Composition Roots limited to wiring and orchestration; place cohesive behavior in its existing owning Module. Create a new file only when no suitable owner exists and the responsibility is independently coherent. Split by responsibility, not line count, and reject one-function pass-through Modules. Fallback is default-deny and may appear in a Blueprint only when frozen behavior explicitly requires the exact branch and its verification. Multiple sequential Tasks may edit the same file. Blueprint steps must be implementation instructions rather than summaries: name the insertion or replacement point, existing symbols to reuse, value flow, exact branch behavior, behavior that remains unchanged, focused assertions, and forbidden adjacent edits. If the Worker would need to search for callers, infer fallback semantics, or choose an implementation, the contract is not self-contained and must be refined or split.
+One Task may contain many detailed Blueprint Steps and up to three inseparable Writes when they jointly produce one behavior-complete result and one useful product-facing commit. Split only when the results can be independently implemented, verified, committed, rolled back, and consumed. A Blueprint Step ID is contiguous (`BP-01...`) and immutable. `expectedEvidence` states what the Worker must cite in `task_handoff`. `expectedPatchShape` accounts for every intended changed surface. `forbiddenChanges` removes adjacent scope. `stopConditions` require the Worker to checkpoint and stop instead of improvising when repository evidence no longer matches the frozen contract.
+
+Keep app entry points and Composition Roots limited to wiring and orchestration; place cohesive behavior in its existing owning Module. Create a new Module only when no suitable owner exists and the responsibility is independently coherent. Fallback is default-deny and may appear only when frozen behavior explicitly requires the exact branch and its verification. If the Worker would need to search for callers, infer fallback semantics, choose an implementation, add an unlisted Write, or decide between alternatives, the contract is not self-contained and must be refined before Freeze.

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { validateBlueprintEvidence } from "./blueprint.js";
 import { calculateFrontier, refreshReadyStates, validateDag } from "./dag.js";
 import { stableHash } from "./hash.js";
 import { appendJsonLine, atomicWriteJson, RuntimeStore } from "./store.js";
@@ -22,6 +23,12 @@ import type {
   RuntimeManifest,
   TaskBinding,
   TaskCheckpoint,
+  TaskConformanceBinding,
+  TaskConformanceFinding,
+  TaskConformanceJob,
+  TaskConformanceResult,
+  TaskConformanceSurface,
+  TaskConformanceVerdict,
   TaskContract,
   TaskDag,
   TaskHandoff,
@@ -56,7 +63,8 @@ function receiptMatchesTask(receipt: TaskReceipt, task: TaskState, contract: Tas
     && receipt.taskId === task.id
     && receipt.taskVersion === contract.version
     && receipt.taskContractPath === `tasks/${task.id}/TASK-V${String(contract.version).padStart(3, "0")}.md`
-    && receipt.contractHash === contract.contractHash;
+    && receipt.contractHash === contract.contractHash
+    && (!manifest.taskConformanceRequired || Boolean(receipt.conformance));
 }
 
 function issueStatusAfterReceiptReconciliation(state: IssueRuntimeState): IssueRuntimeState["issueStatus"] {
@@ -80,9 +88,11 @@ export class RuntimeService {
   }
 
   async initialize(
-    manifestInput: Omit<RuntimeManifest, "schemaVersion" | "dagHash" | "createdAt" | "controlRoot" | "repositoryRoot"> & {
+    manifestInput: Omit<RuntimeManifest, "schemaVersion" | "dagHash" | "createdAt" | "controlRoot" | "repositoryRoot" | "assuranceProfile" | "taskConformanceRequired"> & {
       controlRoot?: string;
       repositoryRoot?: string;
+      assuranceProfile?: RuntimeManifest["assuranceProfile"];
+      taskConformanceRequired?: boolean;
     },
     dag: TaskDag,
     slices: Array<{ id: string; gate: Array<{ command: string; timeoutMs: number; proves: string }> }> = [],
@@ -124,6 +134,8 @@ export class RuntimeService {
       ...manifestInput,
       controlRoot: manifestInput.controlRoot ?? manifestInput.repositoryRoot ?? manifestInput.workspaceRoot,
       repositoryRoot: manifestInput.repositoryRoot ?? manifestInput.workspaceRoot,
+      assuranceProfile: manifestInput.assuranceProfile ?? "standard",
+      taskConformanceRequired: manifestInput.taskConformanceRequired ?? false,
       schemaVersion: 1,
       dagHash: stableHash(dag),
       createdAt: now,
@@ -145,6 +157,20 @@ export class RuntimeService {
 
   async activeModelPolicy() {
     return this.store.readActiveModelPolicy();
+  }
+
+  async locateTaskConformance(bindingId: string): Promise<{ taskId: string; result?: TaskConformanceResult } | undefined> {
+    const state = await this.store.readState();
+    for (const task of Object.values(state.tasks)) {
+      if (task.conformanceJob?.binding?.id === bindingId) return { taskId: task.id, ...(task.conformanceJob.result ? { result: task.conformanceJob.result } : {}) };
+      const resultPath = task.receipt?.conformance?.bindingId === bindingId
+        ? task.receipt.conformance.resultPath
+        : task.correctionContext?.resultPath;
+      if (!resultPath) continue;
+      const result = await this.store.readTaskConformanceArtifact<TaskConformanceResult>(resultPath);
+      if (result?.bindingId === bindingId) return { taskId: task.id, result };
+    }
+    return undefined;
   }
 
   async rebindModelPolicy(input: { configGeneration: number; configHash: string; policy: ModelPolicy; reason: string }) {
@@ -181,6 +207,8 @@ export class RuntimeService {
       task.verificationStatus = "not_run";
       delete task.authoritativeVerification;
       delete task.verificationError;
+      delete task.conformanceJob;
+      delete task.blocker;
       task.gitStatus = "not_started";
       state.issueStatus = "executing";
     }, { taskId, details: { bindingId: binding.id } });
@@ -245,8 +273,9 @@ export class RuntimeService {
         changedFiles: locatedTask.handoff.changedFiles,
         verification: locatedTask.handoff.verification,
         produced: locatedTask.handoff.produced,
+        blueprintEvidence: locatedTask.handoff.blueprintEvidence ?? [],
       };
-      if (stableHash(existing) === stableHash(handoff)) return current;
+      if (stableHash(existing) === stableHash({ ...handoff, blueprintEvidence: handoff.blueprintEvidence ?? [] })) return current;
       throw new Error(`${locatedTask.id} Binding ${bindingId} already submitted a different Handoff`);
     }
     const currentTask = requireActiveTaskBinding(current, bindingId);
@@ -254,13 +283,21 @@ export class RuntimeService {
     if (!contract) throw new Error(`Missing contract for ${currentTask.id}`);
     const unexpectedFiles = handoff.changedFiles.filter((path) => !contract.writes.includes(path));
     if (unexpectedFiles.length > 0) throw new Error(`Handoff contains undeclared Writes: ${unexpectedFiles.join(", ")}`);
+    const manifest = await this.store.readManifest();
+    if (manifest.taskConformanceRequired && handoff.changedFiles.length === 0) throw new Error(`${currentTask.id} Handoff requires at least one changed Write`);
     const unexpectedProducts = handoff.produced.filter((artifact) => !contract.produces.includes(artifact));
-    if (unexpectedProducts.length > 0) throw new Error(`Handoff contains undeclared Produces: ${unexpectedProducts.join(", ")}`);
+    const missingProducts = contract.produces.filter((artifact) => !handoff.produced.includes(artifact));
+    if (unexpectedProducts.length > 0 || missingProducts.length > 0) {
+      throw new Error(`Handoff Produces must exactly match the frozen contract; missing: ${missingProducts.join(", ") || "none"}; unexpected: ${unexpectedProducts.join(", ") || "none"}`);
+    }
+    const blueprintEvidence = manifest.taskConformanceRequired
+      ? validateBlueprintEvidence(contract, handoff.blueprintEvidence)
+      : handoff.blueprintEvidence ?? [];
 
     return this.store.transact("task_handoff_received", (state) => {
       const task = requireActiveTaskBinding(state, bindingId);
       task.handoffStatus = "valid";
-      task.handoff = { ...handoff, submittedAt: new Date().toISOString() };
+      task.handoff = { ...handoff, blueprintEvidence, submittedAt: new Date().toISOString() };
       task.status = "awaiting_verification";
     }, { taskId: currentTask.id, details: { bindingId } });
   }
@@ -326,11 +363,194 @@ export class RuntimeService {
     }, { taskId, details: { passed, ...(error ? { error } : {}) } });
   }
 
+  async createTaskConformanceJob(
+    taskId: string,
+    surface: TaskConformanceSurface,
+    route: { model: string; thinking: TaskConformanceJob["thinking"]; maxTurns: number; modelPolicyGeneration: number },
+  ): Promise<IssueRuntimeState> {
+    const manifest = await this.store.readManifest();
+    if (!manifest.taskConformanceRequired) throw new Error("Task Conformance is not required for this Runtime");
+    const current = await this.store.readState();
+    const task = requireTask(current, taskId);
+    const contract = (await this.store.readDag()).tasks.find((candidate) => candidate.id === taskId);
+    if (!contract || !task.binding || !task.handoff) throw new Error(`${taskId} is missing its frozen contract, Binding, or Handoff`);
+    if (task.status !== "verifying" || task.verificationStatus !== "passed") throw new Error(`${taskId} is not ready for Task Conformance`);
+    if (surface.workItemId !== manifest.workItemId || surface.issueId !== manifest.issueId || surface.taskId !== taskId || surface.taskVersion !== contract.version || surface.contractHash !== contract.contractHash || surface.workerBindingId !== task.binding.id || surface.baselineCommit !== task.binding.baselineCommit) {
+      throw new Error(`${taskId} Task Conformance Surface identity is stale`);
+    }
+    const generation = (task.conformanceGeneration ?? 0) + 1;
+    if (surface.artifactPath !== `audits/tasks/${taskId}/conformance-${generation}-surface.json`) throw new Error(`${taskId} Task Conformance Surface path is stale`);
+    await this.store.writeTaskConformanceArtifact(surface.artifactPath, surface);
+    return this.store.transact("task_conformance_created", (state) => {
+      const mutable = requireTask(state, taskId);
+      mutable.conformanceGeneration = generation;
+      mutable.conformanceJob = {
+        id: `task-conformance-${taskId}-${generation}`,
+        generation,
+        status: "pending",
+        attempt: 0,
+        maxAttempts: 2,
+        model: route.model,
+        thinking: route.thinking,
+        maxTurns: route.maxTurns,
+        modelPolicyGeneration: route.modelPolicyGeneration,
+        surface,
+      };
+      mutable.status = "awaiting_review";
+    }, { taskId, details: { generation, surfaceHash: surface.surfaceHash } });
+  }
+
+  async claimTaskConformance(taskId: string, binding: TaskConformanceBinding): Promise<IssueRuntimeState> {
+    const current = await this.store.readState();
+    const task = requireTask(current, taskId);
+    const job = task.conformanceJob;
+    if (!job || !["pending", "retry_ready", "interrupted"].includes(job.status)) throw new Error(`${taskId} Task Conformance is not claimable`);
+    const manifest = await this.store.readManifest();
+    if (binding.workItemId !== manifest.workItemId || binding.issueId !== manifest.issueId || binding.taskId !== taskId || binding.taskVersion !== job.surface.taskVersion || binding.contractHash !== job.surface.contractHash || binding.surfaceHash !== job.surface.surfaceHash) {
+      throw new Error(`${taskId} Task Conformance Binding identity is stale`);
+    }
+    await this.store.writeBinding(binding.id, binding);
+    return this.store.transact("task_conformance_claimed", (state) => {
+      const mutable = requireTask(state, taskId);
+      const mutableJob = mutable.conformanceJob!;
+      mutableJob.status = "starting";
+      mutableJob.attempt += 1;
+      mutableJob.binding = binding;
+      delete mutableJob.error;
+      mutable.status = "reviewing";
+    }, { taskId, details: { bindingId: binding.id, surfaceHash: binding.surfaceHash } });
+  }
+
+  async bindTaskConformanceAgent(taskId: string, bindingId: string, agentId: string): Promise<IssueRuntimeState> {
+    return this.store.transact("task_conformance_agent_bound", (state) => {
+      const task = requireTask(state, taskId);
+      const job = task.conformanceJob;
+      if (!job?.binding || job.binding.id !== bindingId) throw new Error(`${taskId} Task Conformance Binding mismatch`);
+      if (job.binding.agentId && job.binding.agentId !== agentId) throw new Error(`${taskId} Task Conformance is already bound to another Agent`);
+      job.binding.agentId = agentId;
+    }, { taskId, details: { bindingId, agentId } });
+  }
+
+  async markTaskConformanceAgentStarted(agentId: string): Promise<IssueRuntimeState> {
+    return this.store.transact("task_conformance_agent_started", (state) => {
+      const task = Object.values(state.tasks).find((candidate) => candidate.conformanceJob?.binding?.agentId === agentId);
+      if (!task?.conformanceJob) throw new Error(`Unknown Task Conformance Agent: ${agentId}`);
+      if (task.conformanceJob.result) return;
+      task.conformanceJob.status = "running";
+      task.status = "reviewing";
+    }, { details: { agentId } });
+  }
+
+  async submitTaskConformance(
+    bindingId: string,
+    surfaceHash: string,
+    verdict: TaskConformanceVerdict,
+    findings: TaskConformanceFinding[],
+  ): Promise<IssueRuntimeState> {
+    const current = await this.store.readState();
+    const located = await this.locateTaskConformance(bindingId);
+    if (located?.result) {
+      const existingPayload = { bindingId: located.result.bindingId, surfaceHash: located.result.surfaceHash, verdict: located.result.verdict, findings: located.result.findings };
+      const incomingPayload = { bindingId, surfaceHash, verdict, findings };
+      if (stableHash(existingPayload) === stableHash(incomingPayload)) return this.store.readState();
+      throw new Error(`${located.taskId} Task Conformance Binding already submitted a different Result`);
+    }
+    const task = located ? current.tasks[located.taskId] : undefined;
+    if (!task?.conformanceJob?.binding) throw new Error(`Unknown Task Conformance Binding: ${bindingId}`);
+    const job = task.conformanceJob;
+    const binding = job.binding!;
+    if (job.surface.surfaceHash !== surfaceHash || binding.surfaceHash !== surfaceHash) throw new Error(`${task.id} Task Conformance Surface Hash is stale`);
+    if (!["starting", "running"].includes(job.status)) throw new Error(`${task.id} Task Conformance cannot submit from ${job.status}`);
+    const blocking = findings.filter((finding) => finding.severity === "blocker");
+    if ((verdict === "passed" && blocking.length > 0) || (verdict === "blocked" && blocking.length === 0)) {
+      throw new Error(`${task.id} Task Conformance verdict does not match Blocker Findings`);
+    }
+    const findingIds = new Set<string>();
+    const blueprintIds = new Set((await this.store.readDag()).tasks.find((candidate) => candidate.id === task.id)?.implementationBlueprint?.map((step, index) => typeof step === "string" ? `BP-${String(index + 1).padStart(2, "0")}` : step.id) ?? []);
+    for (const finding of findings) {
+      if (!finding.id.trim() || findingIds.has(finding.id)) throw new Error(`${task.id} Task Conformance Finding IDs must be unique and non-empty`);
+      findingIds.add(finding.id);
+      if (!finding.message.trim() || !finding.violatedRule.trim() || !finding.verification.trim() || !finding.suggestedResolution.trim() || finding.evidence.length === 0 || finding.blueprintStepIds.length === 0) throw new Error(`${finding.id} Task Conformance Finding is incomplete`);
+      const unknownSteps = finding.blueprintStepIds.filter((id) => !blueprintIds.has(id));
+      if (unknownSteps.length > 0) throw new Error(`${finding.id} references unknown Blueprint Steps: ${unknownSteps.join(", ")}`);
+    }
+    const artifactPath = `audits/tasks/${task.id}/conformance-${job.generation}-result.json`;
+    const submittedAt = binding.createdAt;
+    const resultBase = {
+      schemaVersion: 1 as const,
+      workItemId: job.surface.workItemId,
+      issueId: job.surface.issueId,
+      taskId: task.id,
+      taskVersion: job.surface.taskVersion,
+      contractHash: job.surface.contractHash,
+      surfaceHash,
+      bindingId,
+      verdict,
+      findings: structuredClone(findings),
+      artifactPath,
+      submittedAt,
+    };
+    const result: TaskConformanceResult = { ...resultBase, resultHash: stableHash(resultBase) };
+    await this.store.writeTaskConformanceArtifact(artifactPath, result);
+    return this.store.transact("task_conformance_submitted", (state) => {
+      const mutable = requireTask(state, task.id);
+      const mutableJob = mutable.conformanceJob!;
+      mutableJob.result = result;
+      mutableJob.status = verdict === "passed" ? "passed" : "blocked";
+      if (verdict === "passed") {
+        mutable.status = "awaiting_commit";
+        delete mutable.blocker;
+      } else {
+        mutable.status = "blocked";
+        mutable.blocker = `${blocking.length} Task Conformance Blocker(s)`;
+        mutable.correctionContext = { resultHash: result.resultHash, resultPath: artifactPath, findingIds: blocking.map((finding) => finding.id) };
+        state.issueStatus = "blocked";
+      }
+    }, { taskId: task.id, details: { bindingId, surfaceHash, verdict, findingIds: [...findingIds] } });
+  }
+
+  async markTaskConformanceAgentTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<IssueRuntimeState> {
+    return this.store.transact("task_conformance_agent_terminal", (state) => {
+      const task = Object.values(state.tasks).find((candidate) => candidate.conformanceJob?.binding?.agentId === agentId);
+      if (!task?.conformanceJob) throw new Error(`Unknown Task Conformance Agent: ${agentId}`);
+      const job = task.conformanceJob;
+      if (job.result) return;
+      job.error = error ?? `Task Conformance Agent ${terminal} without a Result`;
+      if (job.attempt >= job.maxAttempts) {
+        job.status = "failed";
+        task.status = "blocked";
+        task.blocker = job.error;
+        state.issueStatus = "blocked";
+      } else {
+        job.status = terminal === "completed" ? "interrupted" : "retry_ready";
+        task.status = "awaiting_review";
+      }
+    }, { details: { agentId, terminal, ...(error ? { error } : {}) } });
+  }
+
+  async markTaskConformanceSpawnFailed(taskId: string, error: string): Promise<IssueRuntimeState> {
+    return this.store.transact("task_conformance_spawn_failed", (state) => {
+      const task = requireTask(state, taskId);
+      const job = task.conformanceJob;
+      if (!job || job.status !== "starting") throw new Error(`${taskId} Task Conformance is not starting`);
+      job.error = error;
+      job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
+      task.status = job.status === "failed" ? "blocked" : "awaiting_review";
+      if (job.status === "failed") {
+        task.blocker = error;
+        state.issueStatus = "blocked";
+      }
+    }, { taskId, details: { error } });
+  }
+
   async completeTask(taskId: string, commit: string): Promise<IssueRuntimeState> {
+    const manifest = await this.store.readManifest();
     const current = await this.store.readState();
     const task = requireTask(current, taskId);
     if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") throw new Error(`${taskId} is already completed`);
-    if (task.status !== "verifying" || task.verificationStatus !== "passed" || !task.handoff || !task.binding) {
+    const conformance = task.conformanceJob?.result;
+    const eligibleStatus = manifest.taskConformanceRequired ? task.status === "awaiting_commit" : task.status === "verifying";
+    if (!eligibleStatus || task.verificationStatus !== "passed" || !task.handoff || !task.binding || (manifest.taskConformanceRequired && conformance?.verdict !== "passed")) {
       throw new Error(`${taskId} is not eligible for completion`);
     }
     const receipt: TaskReceipt = {
@@ -345,7 +565,9 @@ export class RuntimeService {
       commit,
       changedFiles: task.handoff.changedFiles,
       produced: task.handoff.produced,
+      ...(task.handoff.blueprintEvidence ? { blueprintEvidence: task.handoff.blueprintEvidence } : {}),
       verification: task.authoritativeVerification ?? task.handoff.verification,
+      ...(conformance ? { conformance: { surfaceHash: conformance.surfaceHash, bindingId: conformance.bindingId, resultHash: conformance.resultHash, resultPath: conformance.artifactPath } } : {}),
       ...(task.binding.baselineCommit ? { baselineCommit: task.binding.baselineCommit } : {}),
       completedAt: new Date().toISOString(),
     };
@@ -373,6 +595,13 @@ export class RuntimeService {
     if (!receipt) throw new Error(`${taskId} has no immutable Task Receipt to reconcile`);
     const manifest = await this.store.readManifest();
     if (!receiptMatchesTask(receipt, task, contract, manifest)) throw new Error(`${taskId} Task Receipt identity does not match the frozen Runtime`);
+    if (manifest.taskConformanceRequired) {
+      const conformance = receipt.conformance!;
+      const result = await this.store.readTaskConformanceArtifact<TaskConformanceResult>(conformance.resultPath);
+      if (!result || result.verdict !== "passed" || result.resultHash !== conformance.resultHash || result.surfaceHash !== conformance.surfaceHash || result.bindingId !== conformance.bindingId || result.workItemId !== manifest.workItemId || result.issueId !== manifest.issueId || result.taskId !== taskId || result.taskVersion !== contract.version || result.contractHash !== contract.contractHash) {
+        throw new Error(`${taskId} Task Receipt Conformance evidence does not match the frozen Runtime`);
+      }
+    }
     if (task.status === "completed"
       && task.gitStatus === "receipted"
       && task.verificationStatus === "passed"
@@ -390,6 +619,7 @@ export class RuntimeService {
       mutable.handoff = {
         changedFiles: structuredClone(receipt.changedFiles),
         produced: structuredClone(receipt.produced),
+        blueprintEvidence: structuredClone(receipt.blueprintEvidence ?? []),
         verification: structuredClone(receipt.verification),
         submittedAt: receipt.completedAt,
       };
@@ -479,6 +709,8 @@ export class RuntimeService {
   }
 
   async createAuditJobs(input: Record<IssueAuditAxis, { model: string; thinking: IssueAuditJob["thinking"]; maxTurns: number; configHash: string }>): Promise<IssueRuntimeState> {
+    const manifest = await this.store.readManifest();
+    if (manifest.assuranceProfile === "fast") throw new Error("Fast Assurance does not run final Issue Audits");
     const current = await this.store.readState();
     if (current.auditJobs && Object.values(current.auditJobs).some((job) => ["pending", "starting", "running", "retry_ready", "interrupted"].includes(job.status))) return current;
     if (current.issueStatus !== "auditing") throw new Error(`Issue Audit cannot start from ${current.issueStatus}`);
@@ -951,6 +1183,37 @@ export class RuntimeService {
     }, { details: { bindingId } });
   }
 
+  async completeFastIssue(): Promise<IssueRuntimeState> {
+    const manifest = await this.store.readManifest();
+    if (manifest.assuranceProfile !== "fast") throw new Error("Mechanical Issue completion requires Fast Assurance");
+    const current = await this.store.readState();
+    if (current.issueStatus === "completed") return current;
+    if (!["integrating", "auditing"].includes(current.issueStatus)) {
+      throw new Error(`Fast Assurance cannot complete from ${current.issueStatus}`);
+    }
+    const tasks = Object.values(current.tasks).sort((left, right) => left.id.localeCompare(right.id));
+    if (tasks.some((task) => task.status !== "completed" || task.gitStatus !== "receipted" || task.verificationStatus !== "passed" || !task.receipt || task.verificationError || task.blocker)) {
+      throw new Error("Fast Assurance completion requires verified immutable Task Receipts");
+    }
+    const sliceGates = Object.values(current.sliceGates ?? {}).sort((left, right) => left.id.localeCompare(right.id));
+    if (sliceGates.length === 0 || sliceGates.some((gate) => gate.status !== "passed")) {
+      throw new Error("Fast Assurance completion requires every Slice Gate to pass");
+    }
+    const activeRemediation = current.remediationPlan && current.remediationPlan.status !== "applied";
+    if (current.auditJobs || Object.keys(current.audits ?? {}).length > 0 || current.auditBlockerVerifierJob || activeRemediation || current.humanDecision?.status === "open") {
+      throw new Error("Fast Assurance completion cannot bypass active Audit or Remediation state");
+    }
+    return this.markIssueCompleted({
+      schemaVersion: 1,
+      issueId: current.issueId,
+      assuranceProfile: "fast",
+      completionMode: "mechanical",
+      taskReceipts: tasks.map((task) => ({ taskId: task.id, commit: task.receipt!.commit, contractHash: task.receipt!.contractHash })),
+      sliceGates: sliceGates.map((gate) => ({ sliceId: gate.id, verification: gate.verification ?? [] })),
+      completedAt: new Date().toISOString(),
+    });
+  }
+
   async markIssueCompleted(auditReceipt: Record<string, unknown>): Promise<IssueRuntimeState> {
     await this.store.writeAudit("issue-final", auditReceipt);
     return this.store.transact("issue_completed", (state) => {
@@ -1026,6 +1289,10 @@ export class RuntimeService {
 
   static createBinding(input: Omit<TaskBinding, "id" | "spawnRequestId">): TaskBinding {
     return { ...input, id: randomUUID(), spawnRequestId: randomUUID() };
+  }
+
+  static createTaskConformanceBinding(input: Omit<TaskConformanceBinding, "id" | "spawnRequestId" | "createdAt">): TaskConformanceBinding {
+    return { ...input, id: randomUUID(), spawnRequestId: randomUUID(), createdAt: new Date().toISOString() };
   }
 
   static createAuditBinding(input: Omit<IssueAuditBinding, "id" | "spawnRequestId" | "createdAt">): IssueAuditBinding {

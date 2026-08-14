@@ -1,4 +1,5 @@
 import { isAbsolute, normalize, sep } from "node:path";
+import { validateBlueprintSteps } from "./blueprint.js";
 import { validateDag } from "./dag.js";
 import { RuntimeService } from "./service.js";
 import type { IssueAuditFinding, TaskContract, TaskDag } from "./types.js";
@@ -51,7 +52,11 @@ export function validateRemediationDrafts(input: {
     if (!draft.reads.some((read) => confirmedEvidence.has(`${read.path}#${read.symbol}`) || confirmedEvidence.has(read.path))) {
       throw new Error(`${draft.id} Reads do not include any confirmed Finding evidence seam`);
     }
-    if (draft.implementationBlueprint.length < 3) throw new Error(`${draft.id} Remediation Blueprint must contain at least 3 exact ordered steps`);
+    const blueprint = validateBlueprintSteps(draft.id, draft.implementationBlueprint);
+    if (blueprint.length < 3) throw new Error(`${draft.id} Remediation Blueprint must contain at least 3 exact ordered steps`);
+    if (draft.expectedPatchShape.length === 0 || draft.forbiddenChanges.length === 0 || draft.stopConditions.length === 0) {
+      throw new Error(`${draft.id} Remediation requires Expected Patch Shape, Forbidden Changes, and Stop Conditions`);
+    }
     if (draft.produces.length === 0) throw new Error(`${draft.id} must produce a repair artifact`);
     if (draft.verification.length === 0) throw new Error(`${draft.id} requires authoritative verification`);
     if (draft.modelProfile && !input.modelProfiles.has(draft.modelProfile)) throw new Error(`${draft.id} references unknown model profile ${draft.modelProfile}`);
@@ -63,7 +68,10 @@ export function validateRemediationDrafts(input: {
       goal: draft.goal,
       editPoint: draft.editPoint,
       reads: draft.reads,
-      implementationBlueprint: draft.implementationBlueprint,
+      implementationBlueprint: blueprint,
+      expectedPatchShape: draft.expectedPatchShape,
+      forbiddenChanges: draft.forbiddenChanges,
+      stopConditions: draft.stopConditions,
       outOfScope: draft.outOfScope,
       dependencies: draft.dependencies,
       conflicts: draft.conflicts,

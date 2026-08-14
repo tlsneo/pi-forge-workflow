@@ -1,6 +1,6 @@
 ---
 name: forge-tasks
-description: Decompose one Local Forge Issue into vertical Slices and self-contained Micro Task contracts, freeze DAG Generation 1, and initialize the shared-serial Issue Runtime.
+description: Decompose one Local Forge Issue into vertical Slices and behavior-complete Task contracts with decision-free Blueprint steps, freeze DAG Generation 1, and initialize the shared-serial Issue Runtime.
 disable-model-invocation: true
 ---
 
@@ -32,7 +32,7 @@ A Slice proves a coherent end-to-end subset of Issue Acceptance through an integ
 
 Each Slice has contiguous ID `S001...`, goal, Acceptance IDs, ordered Task IDs, and at least one authoritative gate command with timeout and a statement of what it proves. Every Issue Acceptance must belong to at least one Slice.
 
-## 3. Write Micro Tasks
+## 3. Write behavior-complete Tasks
 
 Use contiguous IDs `T001...`. Each Task normally has:
 
@@ -43,22 +43,24 @@ Use contiguous IDs `T001...`. Each Task normally has:
 - only real artifact-backed Dependencies and Consumes;
 - separate Conflicts for overlapping writers that are not dependency ordered;
 - the Slice Acceptance IDs it helps prove;
-- an ordered Implementation Blueprint with exact data flow, reuse, edge behavior, and key assertions;
+- ordered `BP-01...` Blueprint Steps, each with one exact instruction and explicit Expected Evidence;
+- Expected Patch Shape covering every intended changed surface;
+- Forbidden Changes and fail-closed Stop Conditions that remove Worker discretion;
 - explicit Out of Scope;
 - focused authoritative verification and timeout;
 - optional `simple`, `medium`, or `complex` Model Profile.
 
 Order Tasks by real data/artifact flow rather than preferred coding order. `Produces` names the value, contract, generated artifact, or proven behavior created at one hop; `Consumes` names the exact upstream artifact used by a later hop. A dependency is valid only when this flow crosses Task boundaries. Each Blueprint must state where its input comes from, where its output goes, and which downstream branches remain unchanged.
 
-A Worker reading its exact frozen versioned contract, such as `TASK-V001.md`, must not need the PRD, Issue, another Task, chat history, call-chain search, architecture selection, or product decisions. Bias toward more, smaller Tasks and useful commits: one Task should be one directly executable edit package. It should normally require only one or two exact Reads and one primary Write. A second Write is appropriate for an inseparable focused test or build registration; three Writes are an exception that must be justified by an intermediate state that otherwise cannot build or verify.
+A Worker reading its exact frozen versioned contract, such as `TASK-V001.md`, must not need the PRD, Issue, another Task, chat history, call-chain search, architecture selection, or product decisions. One Task is one behavior-complete, directly executable, normally committable result. Put micro-steps inside its Blueprint instead of creating one Runtime Task per implementation step. Split only when results can be independently implemented, verified, committed, rolled back, and consumed. A Task normally requires one to three exact Reads and up to three inseparable Writes, including focused tests or build registration needed to prove the behavior.
 
-The Implementation Blueprint is not a goal summary. It must tell the Worker exactly where to edit, what existing symbol to reuse, how values flow into and out of the edit, which condition changes behavior, which branches remain unchanged, and the focused assertion or command that proves the result. Every Task also carries the fixed Minimal Implementation Policy: reuse existing code, change only what Acceptance requires, add no speculative abstraction or dependency, default-deny every Fallback or silent recovery unless explicitly authorized and verified, trust established internal invariants, avoid unrelated cleanup, match nearby style, and keep app/composition-root Modules thin by placing cohesive behavior in its owning Module. Split by responsibility rather than file length; do not replace a god file with one-function pass-through Modules. Split again whenever a Worker would still need to search for a caller, choose among designs, infer fallback behavior, or combine implementation, diagnostics, and independent regression proof in one Task. Sequential Tasks may edit the same file; order them with real Produces / Consumes and let each verified Task create a normal product-facing commit.
+The Implementation Blueprint is not a goal summary. Every Step has a contiguous `BP-xx` ID, one exact instruction, and Expected Evidence. The complete contract names where to edit, the existing symbol to reuse, how values flow into and out of the edit, which condition changes behavior, which branches remain unchanged, the Expected Patch Shape, Forbidden Changes, Stop Conditions, and the focused assertion or command that proves the result. Every Task also carries the fixed Minimal Implementation Policy: reuse existing code, change only what Acceptance requires, add no speculative abstraction or dependency, default-deny every Fallback or silent recovery unless explicitly authorized and verified, trust established internal invariants, avoid unrelated cleanup, match nearby style, and keep app/composition-root Modules thin by placing cohesive behavior in its owning Module. Split by responsibility rather than line count; do not replace a cohesive behavior with orchestration-only commits or one-function pass-through Modules. Sequential Tasks may edit the same file only when real Produces / Consumes make each Task an independently useful behavior result.
 
 ## 4. Run independent Task Preflight
 
 Call `forge_tasks_submit` once with the complete Slice and Task set. This first performs mechanical validation, persists an immutable semantic Proposal and surface hash, creates a Binding-bound `forge-reviewer` Preflight Job through pi-subagents, and leaves the Task Plan unfrozen.
 
-The reviewer reads the Proposal, Issue, and only each Task's declared exact Reads. It must reject any Task that still requires repository search, implementation choices, inferred or unauthorized fallback behavior, multiple independently committable edits, missing context, a summary-style Blueprint, cohesive behavior piled into an app/composition-root Module despite a proven owner, or shallow file fragmentation without independent responsibility. It submits exactly one result through `forge_tasks_preflight_submit`. Ordinary Agent, Explore, or Plan cannot substitute for this Binding.
+The reviewer reads the Proposal, Issue, and only each Task's declared exact Reads. It must reject any Task that still requires repository search, implementation choices, inferred or unauthorized fallback behavior, multiple independently deliverable behaviors, missing context, unstable Blueprint IDs, missing Expected Evidence, ambiguous Expected Patch Shape, non-failing Stop Conditions, cohesive behavior piled into an app/composition-root Module despite a proven owner, or shallow file fragmentation without independent responsibility. It submits exactly one result through `forge_tasks_preflight_submit`. Ordinary Agent, Explore, or Plan cannot substitute for this Binding.
 
 A passed Result automatically freezes the approved Proposal and initializes Runtime. A blocked Result leaves all findings immutable; revise the affected Task contracts and call `forge_tasks_submit` again to create a new Proposal Generation. Reusing the identical blocked Proposal does not bypass Preflight.
 

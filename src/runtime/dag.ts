@@ -117,7 +117,7 @@ export function dependsTransitively(dag: TaskDag, taskId: string, possibleDepend
 export function calculateFrontier(dag: TaskDag, state: IssueRuntimeState): string[] {
   const { order } = validateDag(dag);
   const active = Object.values(state.tasks).some((task) =>
-    ["starting", "running", "awaiting_verification", "verifying"].includes(task.status),
+    ["starting", "running", "awaiting_verification", "verifying", "awaiting_review", "reviewing", "awaiting_commit"].includes(task.status),
   );
   if (active) return [];
 

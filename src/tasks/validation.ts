@@ -1,4 +1,5 @@
 import { isAbsolute, normalize, sep } from "node:path";
+import { validateBlueprintSteps } from "../runtime/blueprint.js";
 import { validateDag } from "../runtime/dag.js";
 import type { TaskContract, TaskDag } from "../runtime/types.js";
 import type { IssueArtifact } from "../issues/types.js";
@@ -38,7 +39,7 @@ export function validateTaskPlan(issue: IssueArtifact, config: ForgeConfig, slic
     throw new Error("The current forge-tasks MVP requires shared-serial with isolationBackend none");
   }
   if (slices.length === 0) throw new Error("At least one vertical Slice is required");
-  if (drafts.length === 0) throw new Error("At least one Micro Task is required");
+  if (drafts.length === 0) throw new Error("At least one behavior-complete Task is required");
   const issueAcceptance = new Set(issue.acceptanceIds);
   const sliceIds = new Set<string>();
   const taskIds = new Set<string>();
@@ -87,8 +88,10 @@ export function validateTaskPlan(issue: IssueArtifact, config: ForgeConfig, slic
     unique(task.produces, `${task.id} produces`);
     unique(task.consumes, `${task.id} consumes`, true);
     unique(task.acceptanceIds, `${task.id} acceptanceIds`);
-    unique(task.implementationBlueprint, `${task.id} implementationBlueprint`);
-    if (task.implementationBlueprint.length < 2) throw new Error(`${task.id} Implementation Blueprint must contain at least 2 ordered steps`);
+    validateBlueprintSteps(task.id, task.implementationBlueprint);
+    unique(task.expectedPatchShape, `${task.id} expectedPatchShape`);
+    unique(task.forbiddenChanges, `${task.id} forbiddenChanges`);
+    unique(task.stopConditions, `${task.id} stopConditions`);
     unique(task.outOfScope, `${task.id} outOfScope`, true);
     if (task.verification.length === 0) throw new Error(`${task.id} requires authoritative verification`);
     task.verification.forEach((command, commandIndex) => validateCommand(command, `${task.id} verification ${commandIndex + 1}`));
@@ -115,7 +118,10 @@ export function validateTaskPlan(issue: IssueArtifact, config: ForgeConfig, slic
     goal: task.goal,
     editPoint: task.editPoint,
     reads: task.reads,
-    implementationBlueprint: task.implementationBlueprint,
+    implementationBlueprint: validateBlueprintSteps(task.id, task.implementationBlueprint),
+    expectedPatchShape: task.expectedPatchShape,
+    forbiddenChanges: task.forbiddenChanges,
+    stopConditions: task.stopConditions,
     outOfScope: task.outOfScope,
     dependencies: task.dependencies,
     conflicts: task.conflicts,

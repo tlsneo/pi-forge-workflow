@@ -1,3 +1,4 @@
+export * from "./blueprint.js";
 export * from "./dag.js";
 export * from "./hash.js";
 export * from "./service.js";

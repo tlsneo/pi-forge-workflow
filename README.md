@@ -2,7 +2,7 @@
 
 [中文说明](README-CN.md)
 
-A deterministic, evidence-backed engineering workflow for [Pi](https://pi.dev) that turns a feature discussion into a reviewed PRD, exact Local Issues, small executable Tasks, verified Git commits, final audits, and bounded remediation.
+A deterministic, evidence-backed engineering workflow for [Pi](https://pi.dev) that turns a feature discussion into a reviewed PRD, exact Local Issues, small executable Tasks, verified Git commits, Assurance-dependent completion, and bounded remediation.
 
 > **Status:** experimental MVP. The implemented execution path is intentionally `shared-serial` and fail-closed. See [Current limitations](#current-limitations) before adopting it.
 
@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 A tag or commit may be pinned:
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.3.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.6.0
 ```
 
 ### Install from a local checkout
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 For project-local Pi installation, add `-l` to `pi install`.
 
-> This repository currently has `"private": true` and version `0.3.0`, so the documented distribution path is Git or a local checkout, not npm publication.
+> This repository currently has `"private": true` and version `0.6.0`, so the documented distribution path is Git or a local checkout, not npm publication.
 
 ## Public workflow
 
@@ -66,7 +66,7 @@ For project-local Pi installation, add `-l` to `pi install`.
 The planning hierarchy is fixed:
 
 ```text
-PRD → Delivery Boundary → Issue → Vertical Slice → Micro Task
+PRD → Delivery Boundary → Issue → Vertical Slice → behavior-complete Task
 ```
 
 Forge separates its **Control Root** from the **Target Repository**. The Control Root owns `.pi` configuration and `.forge` artifacts and may be a non-Git multi-repository workspace. Each Work Item selects and freezes one Git Working Tree; Issue, Task, Worker, verification, Audit, commit, and rollback inherit that repository. Single-repository projects continue to work with both roots equal.
@@ -74,7 +74,7 @@ Forge separates its **Control Root** from the **Target Repository**. The Control
 - **PRD** defines the complete problem, behavior, Acceptance, evidence, architecture decisions, and delivery boundaries.
 - **Issue** materializes exactly one frozen delivery boundary.
 - **Slice** proves an observable subset of Issue Acceptance through an authoritative gate.
-- **Micro Task** is one small, independently executable and verifiable edit package.
+- **Task** is one behavior-complete, independently executable, verifiable, and normally committable result; detailed micro-steps live inside its Blueprint.
 
 ### Multi-repository Control Workspaces
 
@@ -108,7 +108,7 @@ flowchart TD
     I --> DB[Deterministic DB-01 → I001 materialization]
     DB --> T[forge-tasks]
     T --> FLOW[Trace data flow and module ownership]
-    FLOW --> DAG[Vertical Slices + Micro Task DAG]
+    FLOW --> DAG[Vertical Slices + behavior-complete Task DAG]
     DAG --> PF{Independent Task Preflight}
     PF -->|blocked| DAG
     PF -->|passed| RUN[forge-run]
@@ -116,11 +116,16 @@ flowchart TD
     RUN --> W[Binding-bound Task Worker]
     W --> H[Structured Handoff]
     H --> V[Authoritative diff + command verification]
-    V --> C[Scoped Git commit + immutable receipt]
+    V --> TC{Single Task Conformance audit}
+    TC -->|blocked| W
+    TC -->|passed| C[Scoped Git commit + immutable receipt]
     C --> G{Slice Gates}
-    G -->|passed| A{Three-axis final Issue audit}
+    G -->|passed| AS{Frozen Assurance Profile}
     G -->|failed| RM[Verifier → Planner → Preflight → DAG amendment]
-    A -->|passed| DONE[Issue completed]
+    AS -->|Fast| MF[Mechanical final receipt]
+    MF --> DONE[Issue completed]
+    AS -->|Standard / High| A{Three-axis final Issue audit}
+    A -->|passed| DONE
     A -->|confirmed blocker| RM
     A -->|ambiguous or contract-changing| HD[Human Decision Gate]
     RM --> W
@@ -191,13 +196,13 @@ tasks/T003/TASK-V001.md
 A Task normally has:
 
 - one primary `path#Symbol` edit point;
-- one or two exact Reads;
-- one primary Write;
-- a detailed ordered Implementation Blueprint;
+- one to three exact Reads and up to three inseparable Writes;
+- ordered `BP-01...` Steps with exact instructions and Expected Evidence;
+- an Expected Patch Shape, Forbidden Changes, and fail-closed Stop Conditions;
 - explicit Produces, Consumes, Out of Scope, and Acceptance ownership;
 - focused authoritative verification.
 
-Workers do not read the parent PRD, reopen architecture, search the full call chain, invoke other Skills, or spawn nested Subagents.
+A Task may contain many detailed micro-steps while remaining one behavior-complete commit result. Split only when results can be independently implemented, verified, committed, rolled back, and consumed. Workers do not read the parent PRD, reopen architecture, search the full call chain, invoke other Skills, or spawn nested Subagents.
 
 ### 5. Minimal Implementation Policy
 
@@ -230,19 +235,18 @@ Completed Tasks, Receipts, commits, reviews, audits, and old DAG generations are
 
 ### 7. Authoritative verification and Git integration
 
-Worker-reported commands are advisory. The coordinator reruns every frozen verification command, compares the actual Git diff against declared Writes, creates a scoped commit, and then writes the Receipt.
+Worker-reported commands are advisory. The coordinator reruns every frozen verification command, validates `git diff --check`, freezes the staged patch hash, and starts exactly one Binding-bound read-only Task Conformance Auditor. The Auditor checks every Blueprint Step, Handoff Evidence, Expected Patch Shape, Forbidden Change, minimality, correctness, and local safety. Only a passed result with an unchanged patch hash may be committed and receipted. A blocked result rolls back declared Writes and retries the same frozen Task with immutable Correction Context; it does not start an Issue Remediation Planner.
 
 Commit subjects are exactly the frozen Task titles. Forge metadata remains in Receipts rather than leaking into product-facing Git history.
 
-### 8. Independent audit and bounded remediation
+### 8. Assurance-dependent completion and bounded remediation
 
-After Slice Gates pass, Forge runs three independent final Issue audits:
+After Slice Gates pass, the frozen Runtime Assurance Profile controls completion:
 
-- **Standards**;
-- **Acceptance / Integration**;
-- **Architecture / Minimality**.
+- **Fast** still requires one pre-commit Conformance Audit per Task, then writes a mechanical final Receipt from audited Task Receipts and Slice Gate evidence and completes without spawning final Issue Auditors;
+- **Standard** and **High Assurance** retain the three independent final Issue audits: Standards, Acceptance / Integration, and Architecture / Minimality.
 
-A Blocker enters a controlled loop:
+An audited Blocker enters a controlled loop:
 
 ```text
 Audit Finding
@@ -267,10 +271,12 @@ Architecture changes, public Interface changes, scope changes, missing evidence,
 - Model profiles and role-based routing through `.pi/forge.json`.
 - Binding-bound `pi-subagents` Workers, Reviewers, Verifiers, and Planners.
 - Independent Task Preflight before Task contracts are frozen.
-- Exact Task context and declared Write boundaries.
+- Decision-free Blueprint Steps with stable IDs, Expected Evidence, Expected Patch Shape, Forbidden Changes, and Stop Conditions.
+- Exact Task context, declared Write boundaries, and Handoff traceability for every Blueprint Step.
+- One Binding-bound pre-commit Task Conformance Audit with bounded same-Task correction.
 - Authoritative verification and clean Git baseline enforcement.
 - Scoped product-facing commits with immutable execution Receipts.
-- Slice Gate evidence and final three-axis Issue audit.
+- Slice Gate evidence with mechanical Fast completion or final three-axis Issue audit.
 - Additive remediation and explicit Human Decision gates.
 - Idempotent submissions and recovery from interrupted lifecycle events.
 
@@ -345,7 +351,7 @@ Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 
 Every frozen Delivery Boundary becomes exactly one Local Issue artifact.
 
-### 4. Generate Slices and Micro Tasks
+### 4. Generate Slices and behavior-complete Tasks
 
 ```text
 /skill:forge-tasks
@@ -354,7 +360,7 @@ Work Item root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4
 Issue: I001
 ```
 
-Forge traces the implementation flow, creates vertical Slices and detailed Micro Tasks, and starts an independent Preflight. The Runtime is initialized only after Preflight passes.
+Forge traces the implementation flow, creates vertical Slices and behavior-complete Tasks with detailed decision-free Blueprint Steps, and starts an independent Preflight. The Runtime is initialized only after Preflight passes.
 
 ### 5. Execute and recover
 
@@ -364,7 +370,7 @@ Forge traces the implementation flow, creates vertical Slices and detailed Micro
 Runtime root: .forge/work-items/WI-0001-configurable-request-timeout-a1b2c3d4/issues/I001/runtime
 ```
 
-Keep the interactive Pi session open. `forge-run` advances only the next deterministic action: start a Worker, finalize a Handoff, verify and commit a Task, run a Slice Gate, start final Audits, or enter remediation/human-decision recovery.
+Keep the interactive Pi session open. `forge-run` advances only the next deterministic action: start a Worker, finalize a Handoff, verify and stage a Task, run its single pre-commit Conformance Audit, commit an unchanged passed patch, retry the same Task from Correction Context, run a Slice Gate, complete a Fast Issue mechanically, start final Audits for Standard/High Assurance, or enter remediation/human-decision recovery.
 
 ## Generated artifacts
 
@@ -400,6 +406,9 @@ With the default artifact root, a Work Item resembles:
             ├── bindings/
             ├── receipts/T001-V001.json
             └── audits/
+                └── tasks/T001/
+                    ├── conformance-1-surface.json
+                    └── conformance-1-result.json
 ```
 
 The artifact root defaults to `.forge` and is normally Git-ignored. It contains machine-specific Runtime identity, local paths, model routing, and execution evidence; do not publish generated Work Items unless intentionally sanitized.

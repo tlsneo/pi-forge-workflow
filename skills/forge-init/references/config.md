@@ -38,6 +38,7 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
       "prdArchitectureReview": "audit",
       "blockerVerifier": "verifier",
       "taskPreflight": "audit",
+      "taskConformanceAudit": "simple",
       "remediationPlanner": "complex",
       "issueAudit": "audit"
     }
@@ -60,7 +61,7 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
   },
   "agents": {
     "directory": ".pi/agents",
-    "templateVersion": 2
+    "templateVersion": 3
   },
   "instructions": {
     "file": "AGENTS.md",
@@ -77,7 +78,9 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
 }
 ```
 
-The current release supports only Local Issue artifacts and `shared-serial + isolationBackend: none + poolSize: 1`. External tracker publication and isolated workspace pools are not configurable until their execution adapters exist.
+The current release supports only Local Issue artifacts and `shared-serial + isolationBackend: none + poolSize: 1`. External tracker publication and isolated workspace pools are not configurable until their execution adapters exist. Existing Configs without `taskConformanceAudit` route it in memory to `task.simple`; Forge does not rewrite the user's Config merely to add this compatibility default.
+
+`review.preset` is frozen into the Issue Runtime when its Task Plan is created. Every new Task Runtime requires one pre-commit Task Conformance Audit per Task. `fast` completes mechanically after audited Task Receipts and all Slice Gates pass; `standard` and `high-assurance` retain final Issue Audits. Existing Runtimes without this field default to `standard`.
 
 `thinking` is a non-empty model capability name, not a Forge-owned enum. Every profile uses an exact available `provider/model`. During scan and validation, Forge accepts exactly the levels reported for that model by Pi's current model registry, including future levels introduced after this Forge release; unsupported levels are rejected rather than inferred or silently changed.
 

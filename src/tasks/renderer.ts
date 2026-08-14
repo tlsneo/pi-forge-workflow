@@ -1,4 +1,5 @@
 import type { IssueArtifact } from "../issues/types.js";
+import { normalizeBlueprintSteps } from "../runtime/blueprint.js";
 import type { TaskContract } from "../runtime/types.js";
 import type { SliceDraft } from "./types.js";
 import { minimalImplementationPolicyLines } from "../policy/minimal-implementation.js";
@@ -41,7 +42,21 @@ ${bullets(contract.writes.map((path) => `\`${path}\``))}
 
 ## Implementation Blueprint
 
-${(contract.implementationBlueprint ?? []).map((step, index) => `${index + 1}. ${step}`).join("\n")}
+${normalizeBlueprintSteps(contract).map((step) => `### ${step.id}\n\n${step.instruction}\n\nExpected Evidence:\n${bullets(step.expectedEvidence)}`).join("\n\n")}
+
+## Expected Patch Shape
+
+${bullets(contract.expectedPatchShape ?? [])}
+
+## Forbidden Changes
+
+${bullets(contract.forbiddenChanges ?? [])}
+
+## Stop Conditions
+
+${bullets(contract.stopConditions ?? [])}
+
+If any Stop Condition is true, checkpoint the mismatch and stop without improvising.
 
 ## Minimal Implementation Policy
 
@@ -65,9 +80,11 @@ ${contract.verification.map((item) => `- \`${item.command}\` — timeout ${item.
 ## Worker Protocol
 
 1. Call \`task_resume\` with the Runtime root and Binding ID before reading anything else.
-2. Read only this contract and its exact Reads unless the Blueprint explicitly requires another generated artifact.
-3. Do not redesign the Issue, Slice, Interface, error semantics, or test location.
-4. Submit one \`task_handoff\`, then stop. Agent completion alone does not complete this Task.
+2. Read only this contract, its exact Reads, and any frozen Correction Context returned by \`task_resume\`.
+3. Execute every Blueprint Step in order. The Task contract owns all implementation decisions.
+4. If a Stop Condition or contract mismatch occurs, checkpoint it and stop without an implementation Handoff.
+5. Map every completed Blueprint Step to concrete Evidence in \`task_handoff\`.
+6. Submit one \`task_handoff\`, then stop. Agent completion alone does not complete this Task.
 `;
 }
 

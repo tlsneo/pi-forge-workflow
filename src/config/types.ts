@@ -1,8 +1,8 @@
-import type { ThinkingLevel } from "../runtime/types.js";
+import type { AssuranceProfile, ThinkingLevel } from "../runtime/types.js";
 
 export type WorkspaceMode = "shared-serial";
 export type TrackerMode = "local";
-export type AuditPreset = "fast" | "standard" | "high-assurance";
+export type AuditPreset = AssuranceProfile;
 export type ForgeInstructionFile = "AGENTS.override.md" | "AGENTS.md" | "AGENTS.MD" | "CLAUDE.md" | "CLAUDE.MD";
 
 export interface RepositoryContextConfig {
