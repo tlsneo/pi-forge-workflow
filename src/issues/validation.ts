@@ -64,6 +64,7 @@ export function validateIssueDrafts(prd: ForgePrd, issues: IssueDraft[]): Record
     const boundary = prd.deliveryBoundaries.find((candidate) => candidate.id === issue.deliveryBoundaryId)!;
     requireText(issue.title, `${issue.id} title`);
     requireText(issue.goal, `${issue.id} goal`);
+    if (issue.title !== boundary.title) throw new Error(`${issue.id} title must exactly match ${boundary.id}`);
     requireText(issue.deliveryOutcome, `${issue.id} deliveryOutcome`);
     requireUniqueTexts(issue.scope, `${issue.id} scope`);
     if (issue.goal !== boundary.goal) throw new Error(`${issue.id} goal must exactly match ${boundary.id}`);

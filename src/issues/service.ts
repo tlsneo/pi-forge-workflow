@@ -1,7 +1,8 @@
 import { stableHash } from "../runtime/hash.js";
 import { WorkItemService } from "../work-item/service.js";
 import type { WorkItemState } from "../work-item/types.js";
-import type { IssueArtifact, IssueDraft, IssuesGeneration, IssuesManifest } from "./types.js";
+import { materializeIssueDrafts } from "./materialization.js";
+import type { IssueArtifact, IssuesGeneration, IssuesManifest } from "./types.js";
 import { validateIssueDrafts } from "./validation.js";
 
 export class IssuesService {
@@ -17,7 +18,7 @@ export class IssuesService {
     return { state: opened.state, ...(manifest ? { manifest } : {}) };
   }
 
-  async submit(drafts: IssueDraft[]): Promise<{ state: WorkItemState; manifest: IssuesManifest; idempotent: boolean }> {
+  async submit(): Promise<{ state: WorkItemState; manifest: IssuesManifest; idempotent: boolean }> {
     const current = await this.workItem.store.readState();
     const frozen = current.frozenReceipt;
     const prdGeneration = current.currentPrd;
@@ -27,6 +28,12 @@ export class IssuesService {
     if (frozen.generation !== prdGeneration.generation || frozen.contentHash !== prdGeneration.contentHash) {
       throw new Error("Frozen PRD Receipt does not match the active PRD Generation");
     }
+    if (current.issues) {
+      const manifest = await this.workItem.store.readIssuesManifest();
+      if (!manifest) throw new Error("Issues state exists but manifest.json is missing");
+      return { state: current, manifest, idempotent: true };
+    }
+    const drafts = materializeIssueDrafts(prdGeneration.prd);
     const traceability = validateIssueDrafts(prdGeneration.prd, drafts);
     const workItemManifest = await this.workItem.store.readManifest();
     const source = {
@@ -42,15 +49,6 @@ export class IssuesService {
       return { ...artifactBase, artifactHash: stableHash(artifactBase) };
     });
     const contentHash = stableHash({ source, issues });
-    if (current.issues) {
-      if (current.issues.contentHash !== contentHash) {
-        throw new Error("Issues already exist for this frozen PRD; a different proposal requires a successor Work Item");
-      }
-      const manifest = await this.workItem.store.readIssuesManifest();
-      if (!manifest) throw new Error("Issues state exists but manifest.json is missing");
-      return { state: current, manifest, idempotent: true };
-    }
-
     const createdAt = new Date().toISOString();
     const generation: IssuesGeneration = {
       schemaVersion: 1,
