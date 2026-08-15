@@ -11,7 +11,6 @@ import { stableHash } from "../src/runtime/hash.js";
 import { PiSubagentsAdapter, type EventBus } from "../src/subagents/adapter.js";
 import { TaskPreflightService } from "../src/tasks/preflight-service.js";
 import { buildTaskPreflightPrompt } from "../src/tasks/preflight-prompt.js";
-import type { IssueDraft } from "../src/issues/types.js";
 import { TasksService } from "../src/tasks/service.js";
 import type { MicroTaskDraft, SliceDraft } from "../src/tasks/types.js";
 import { WorkItemService } from "../src/work-item/service.js";
@@ -86,13 +85,7 @@ async function fixture(preset: ForgeConfig["review"]["preset"] = "standard") {
   for (const axis of ["coverage", "evidence", "architecture"] as ReviewAxis[]) await workItem.submitReview({ axis, verdict: "passed", surfaceHash: submitted.currentPrd!.reviewSurfaceHashes[axis], reviewerId: axis, findings: [] });
   await workItem.approve({ approvedBy: "user", evidence: "approved" });
   await workItem.freeze();
-  const issue: IssueDraft = {
-    id: "I001", deliveryBoundaryId: "DB-01", title: "Add config label", goal: "Expose a label.", deliveryOutcome: "createConfig returns label default.",
-    scope: ["Extend AppConfig"], nonGoals: ["Change retries"], acceptanceIds: ["AC-01"],
-    behavior: prd().behavior, decisionIds: ["D-01"], impactEvidenceIds: ["E-01"], testSeamNames: ["createConfig unit"],
-    verification: ["createConfig unit test", "Assert retries and label"], dependencies: [],
-  };
-  await new IssuesService(workItemRoot).submit([issue]);
+  await new IssuesService(workItemRoot).submit();
   return { repositoryRoot, workItemRoot, tasks: new TasksService(workItemRoot) };
 }
 

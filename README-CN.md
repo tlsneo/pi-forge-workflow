@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 也可以固定 Tag 或 Commit：
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.6.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.7.0
 ```
 
 ### 从本地 Checkout 安装
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 如果希望只安装到当前项目，给 `pi install` 增加 `-l`。
 
-> 当前 `package.json` 仍是 `"private": true` 和版本 `0.6.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
+> 当前 `package.json` 仍是 `"private": true` 和版本 `0.7.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
 
 ## 公开工作流
 
@@ -68,6 +68,8 @@ pi install /absolute/path/to/pi-forge-workflow
 ```text
 PRD → Delivery Boundary → Issue → Vertical Slice → 行为完整 Task
 ```
+
+仓库在 [`benchmarks/`](benchmarks/README.md) 提供可重复创建的 `simple`、`medium`、`hard` 本地 Fixture，以及准备和 Runtime 计时脚本。
 
 Forge 将 **Control Root** 与 **Target Repository** 分离。Control Root 保存 `.pi` 配置和 `.forge` Artifact，可以是没有 Git 的多仓库 Workspace；每个 Work Item 选择并冻结一个 Git Working Tree，Issue、Task、Worker、Verification、Audit、Commit 和 Rollback 全部继承该仓库。单仓库项目继续使用两个 Root 相同的退化形式。
 
@@ -169,7 +171,7 @@ DB-01 → I001
 DB-02 → I002
 ```
 
-Issue 的 Goal、Outcome、Scope、Acceptance、Behavior、Decision、Evidence、Test Seam、Non-goal、Verification 和 Dependency 必须与冻结 Delivery Boundary 一致。Issue 阶段不能扩大 Scope，也不能发明新的实现选择。
+Issue 的 Goal、Outcome、Scope、Acceptance、Behavior、Decision、Evidence、Test Seam、Non-goal、Verification 和 Dependency 直接从冻结 Delivery Boundary 复制。`forge_issues_submit` 只接收 Work Item Root，不再让 LLM 重写一份 Issue Proposal，因此不存在字段漂移、拼写试错或重复提交。PRD 在 Review 前就会拒绝任何无法完整物化为 Issue 的 Delivery Boundary。
 
 ### 3. Task 根据真实数据流生成
 

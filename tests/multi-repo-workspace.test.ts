@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ForgeConfig } from "../src/config/types.js";
 import { TaskExecutionService } from "../src/execution/service.js";
 import { IssuesService } from "../src/issues/service.js";
-import type { IssueDraft } from "../src/issues/types.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { TasksService } from "../src/tasks/service.js";
 import type { MicroTaskDraft, SliceDraft } from "../src/tasks/types.js";
@@ -71,8 +70,7 @@ describe("non-Git Forge Control Workspace", () => {
     for (const axis of ["coverage", "evidence", "architecture"] as ReviewAxis[]) await workItem.submitReview({ axis, verdict: "passed", surfaceHash: submitted.currentPrd!.reviewSurfaceHashes[axis], reviewerId: axis, findings: [] });
     await workItem.approve({ approvedBy: "user", evidence: "Approved" });
     await workItem.freeze();
-    const issue: IssueDraft = { id: "I001", deliveryBoundaryId: "DB-01", title: "Update selected value", goal: "Expose value 2", deliveryOutcome: "Only subproject1 changes.", scope: ["src/value.ts#value"], nonGoals: ["Modify another repository"], acceptanceIds: ["AC-01"], behavior: prd.behavior, decisionIds: ["D-01"], impactEvidenceIds: ["E-01"], testSeamNames: ["selected value"], verification: ["selected repository value command", "Read the selected repository export"], dependencies: [] };
-    await new IssuesService(workItemRoot).submit([issue]);
+    await new IssuesService(workItemRoot).submit();
 
     const command = "grep -q 'value = 2' src/value.ts";
     const slices: SliceDraft[] = [{ id: "S001", title: "Selected value", goal: "Expose value 2", acceptanceIds: ["AC-01"], taskIds: ["T001"], gate: [{ command, timeoutMs: 30_000, proves: "AC-01" }] }];

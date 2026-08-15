@@ -141,7 +141,7 @@ er       → erDiagram
 
 The Mermaid value contains source only, without Markdown fences. An empty diagrams array is valid.
 
-Delivery Boundary IDs are contiguous `DB-01...`. Every Acceptance belongs to at least one boundary. Use one boundary by default. Multiple boundaries are valid only when every boundary is independently implementable, verifiable, deliverable, and closeable. `forge-issues` materializes them deterministically as `DB-01 → I001`, `DB-02 → I002`; it does not redesign delivery boundaries.
+Delivery Boundary IDs are contiguous `DB-01...`. Every Acceptance belongs to at least one boundary. Use one boundary by default. Multiple boundaries are valid only when every boundary is independently implementable, verifiable, deliverable, and closeable. A boundary requires non-empty Evidence and Test Seams. Its `verification` is the exact ordered, de-duplicated concatenation of every owned Acceptance verification array followed by every named Test Seam verification string. `forge-issues` accepts no Issue proposal; it materializes the frozen boundaries directly as `DB-01 → I001`, `DB-02 → I002`.
 
 ## Amendment
 

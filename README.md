@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 A tag or commit may be pinned:
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.6.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.7.0
 ```
 
 ### Install from a local checkout
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 For project-local Pi installation, add `-l` to `pi install`.
 
-> This repository currently has `"private": true` and version `0.6.0`, so the documented distribution path is Git or a local checkout, not npm publication.
+> This repository currently has `"private": true` and version `0.7.0`, so the documented distribution path is Git or a local checkout, not npm publication.
 
 ## Public workflow
 
@@ -68,6 +68,8 @@ The planning hierarchy is fixed:
 ```text
 PRD → Delivery Boundary → Issue → Vertical Slice → behavior-complete Task
 ```
+
+Repeatable `simple`, `medium`, and `hard` local fixtures plus preparation and Runtime timing scripts live in [`benchmarks/`](benchmarks/README.md).
 
 Forge separates its **Control Root** from the **Target Repository**. The Control Root owns `.pi` configuration and `.forge` artifacts and may be a non-Git multi-repository workspace. Each Work Item selects and freezes one Git Working Tree; Issue, Task, Worker, verification, Audit, commit, and rollback inherit that repository. Single-repository projects continue to work with both roots equal.
 
@@ -169,7 +171,7 @@ DB-01 → I001
 DB-02 → I002
 ```
 
-Goal, outcome, scope, Acceptance, behavior, Decisions, evidence, Test Seams, non-goals, verification, and dependencies must match the frozen Delivery Boundary. The Issue phase cannot widen scope or invent implementation choices.
+Goal, outcome, scope, Acceptance, behavior, Decisions, evidence, Test Seams, non-goals, verification, and dependencies are copied directly from the frozen Delivery Boundary. `forge_issues_submit` accepts only the Work Item root; there is no LLM-authored Issue proposal to drift, mistype, or retry. PRD validation rejects any boundary whose exact Issue verification closure is incomplete before Review starts.
 
 ### 3. Tasks follow real data flow
 

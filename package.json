@@ -1,6 +1,6 @@
 {
   "name": "pi-forge-workflow",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Deterministic Forge workflow runtime and Skills for Pi",
@@ -15,7 +15,9 @@
     "demo": "tsx examples/demo.ts",
     "demo:prd": "tsx examples/prd-demo.ts",
     "runtime": "tsx bin/task-runtime.ts",
-    "prd-runtime": "tsx bin/prd-runtime.ts"
+    "prd-runtime": "tsx bin/prd-runtime.ts",
+    "benchmark:prepare": "node benchmarks/prepare.mjs",
+    "benchmark:report": "node benchmarks/report.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

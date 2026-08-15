@@ -31,6 +31,7 @@ export function buildTaskPreflightPrompt(input: {
     "- A Task normally has one to three exact Reads and up to three inseparable Writes, including focused tests or build registration required to prove the behavior.",
     "- Every Blueprint step must have a contiguous BP-xx ID, one exact instruction, and explicit Expected Evidence.",
     "- The Blueprint must name the exact edit or insertion point, existing symbols to reuse, value flow, changed condition, unchanged branches, focused assertion or verification, and forbidden adjacent scope.",
+    "- For every test-file Write, require the exact import or fixture seam, insertion point, test name, input, expected output or exact error assertion, and existing test that remains unchanged; category-only test coverage is a Blocker.",
     "- Expected Patch Shape must describe every intended changed surface. Forbidden Changes and Stop Conditions must remove Worker discretion and require fail-closed behavior on contract mismatch.",
     "- A Worker must not need to search for callers, choose among designs, invent error semantics, infer a test seam, or reopen the Issue/PRD.",
     ...minimalImplementationPolicyLines(),

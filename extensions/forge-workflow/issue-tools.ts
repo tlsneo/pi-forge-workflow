@@ -2,30 +2,8 @@ import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { IssuesService } from "../../src/issues/service.js";
-import type { IssueDraft } from "../../src/issues/types.js";
 
 const WorkItemRoot = Type.String({ description: "Forge Work Item root containing a frozen PRD Receipt" });
-const BehaviorSchema = Type.Object({
-  happyPath: Type.Array(Type.String()),
-  errorPaths: Type.Array(Type.String()),
-  edgeCases: Type.Array(Type.String()),
-});
-const IssueDraftSchema = Type.Object({
-  id: Type.String(),
-  deliveryBoundaryId: Type.String(),
-  title: Type.String(),
-  goal: Type.String(),
-  deliveryOutcome: Type.String(),
-  scope: Type.Array(Type.String()),
-  nonGoals: Type.Array(Type.String()),
-  acceptanceIds: Type.Array(Type.String()),
-  behavior: BehaviorSchema,
-  decisionIds: Type.Array(Type.String()),
-  impactEvidenceIds: Type.Array(Type.String()),
-  testSeamNames: Type.Array(Type.String()),
-  verification: Type.Array(Type.String()),
-  dependencies: Type.Array(Type.String()),
-});
 
 function normalizeRoot(cwd: string, input: string): string {
   return resolve(cwd, input.replace(/^@/, ""));
@@ -53,14 +31,14 @@ export function registerIssueTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "forge_issues_submit",
     label: "Forge Issues Submit",
-    description: "Validate complete Acceptance traceability and generate immutable Local Issue artifacts plus one Issues Manifest from a frozen PRD",
-    parameters: Type.Object({ workItemRoot: WorkItemRoot, issues: Type.Array(IssueDraftSchema) }),
+    description: "Deterministically materialize every frozen PRD Delivery Boundary as one immutable Local Issue and generate the Issues Manifest",
+    parameters: Type.Object({ workItemRoot: WorkItemRoot }),
     async execute(_id, params, _signal, _update, ctx) {
       const root = normalizeRoot(ctx.cwd, params.workItemRoot);
-      const result = await new IssuesService(root).submit(params.issues as IssueDraft[]);
+      const result = await new IssuesService(root).submit();
       return text(
         result.idempotent
-          ? `Issues Generation ${result.manifest.generation} already matches this proposal.`
+          ? `Issues Generation ${result.manifest.generation} is already materialized from the frozen PRD.`
           : `Generated ${result.manifest.issues.length} Local Issue artifact${result.manifest.issues.length === 1 ? "" : "s"} and issues/manifest.json.`,
         { workItemRoot: root, ...result },
       );

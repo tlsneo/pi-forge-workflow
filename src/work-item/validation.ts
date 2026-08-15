@@ -10,6 +10,17 @@ function requireArray(value: unknown, label: string): asserts value is unknown[]
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
 }
 
+function requireUniqueTexts(values: string[], label: string, allowEmpty = false): void {
+  requireArray(values, label);
+  if (!allowEmpty && values.length === 0) throw new Error(`${label} must not be empty`);
+  const seen = new Set<string>();
+  for (const value of values) {
+    requireText(value, label);
+    if (seen.has(value)) throw new Error(`${label} contains duplicate value: ${value}`);
+    seen.add(value);
+  }
+}
+
 function requireUniqueIds(items: Array<{ id: string }>, label: string): void {
   const ids = new Set<string>();
   for (const item of items) {
@@ -148,8 +159,10 @@ export function validatePrd(prd: ForgePrd): void {
   }
   requireUniqueIds(prd.deliveryBoundaries, "delivery boundary");
   const acceptanceIds = new Set(prd.acceptance.map((item) => item.id));
+  const acceptanceById = new Map(prd.acceptance.map((item) => [item.id, item]));
   const decisionIds = new Set(prd.decisions.map((item) => item.id));
   const testSeamNames = new Set(prd.testSeams.map((item) => item.name));
+  const testSeamByName = new Map(prd.testSeams.map((item) => [item.name, item]));
   const nonGoals = new Set(prd.nonGoals);
   const allowedVerification = new Set([...prd.acceptance.flatMap((item) => item.verification), ...prd.testSeams.map((item) => item.verification)]);
   const behavior = { happyPath: new Set(prd.behavior.happyPath), errorPaths: new Set(prd.behavior.errorPaths), edgeCases: new Set(prd.behavior.edgeCases) };
@@ -161,11 +174,16 @@ export function validatePrd(prd: ForgePrd): void {
     requireText(boundary.title, `${boundary.id} title`);
     requireText(boundary.outcome, `${boundary.id} outcome`);
     requireText(boundary.goal, `${boundary.id} goal`);
-    if (!Array.isArray(boundary.scope) || boundary.scope.length === 0) throw new Error(`${boundary.id} requires frozen scope`);
-    boundary.scope.forEach((item) => requireText(item, `${boundary.id} scope`));
-    if (new Set(boundary.scope).size !== boundary.scope.length) throw new Error(`${boundary.id} scope contains duplicate values`);
+    requireUniqueTexts(boundary.scope, `${boundary.id} scope`);
     requireText(boundary.rationale, `${boundary.id} rationale`);
-    if (boundary.acceptanceIds.length === 0) throw new Error(`${boundary.id} requires Acceptance ownership`);
+    requireUniqueTexts(boundary.acceptanceIds, `${boundary.id} Acceptance`);
+    requireUniqueTexts(boundary.decisionIds, `${boundary.id} Decisions`, true);
+    requireUniqueTexts(boundary.impactEvidenceIds, `${boundary.id} Evidence`);
+    requireUniqueTexts(boundary.testSeamNames, `${boundary.id} Test Seams`);
+    requireUniqueTexts(boundary.nonGoals, `${boundary.id} Non-goals`, true);
+    requireUniqueTexts(boundary.verification, `${boundary.id} Verification`);
+    requireUniqueTexts(boundary.dependencies, `${boundary.id} dependencies`, true);
+    for (const kind of ["happyPath", "errorPaths", "edgeCases"] as const) requireUniqueTexts(boundary.behavior[kind], `${boundary.id} ${kind}`, true);
     for (const id of boundary.acceptanceIds) {
       if (!acceptanceIds.has(id)) throw new Error(`${boundary.id} references unknown Acceptance ${id}`);
       coveredAcceptance.add(id);
@@ -175,6 +193,13 @@ export function validatePrd(prd: ForgePrd): void {
     for (const name of boundary.testSeamNames) if (!testSeamNames.has(name)) throw new Error(`${boundary.id} references unknown Test Seam ${name}`);
     for (const value of boundary.nonGoals) if (!nonGoals.has(value)) throw new Error(`${boundary.id} references unknown Non-goal ${value}`);
     for (const value of boundary.verification) if (!allowedVerification.has(value)) throw new Error(`${boundary.id} verification is not frozen in the PRD: ${value}`);
+    const expectedVerification = [...new Set([
+      ...boundary.acceptanceIds.flatMap((id) => acceptanceById.get(id)?.verification ?? []),
+      ...boundary.testSeamNames.map((name) => testSeamByName.get(name)?.verification).filter((value): value is string => Boolean(value)),
+    ])];
+    if (JSON.stringify(boundary.verification) !== JSON.stringify(expectedVerification)) {
+      throw new Error(`${boundary.id} Verification must exactly contain its owned Acceptance and Test Seam verification: ${expectedVerification.join(" | ")}`);
+    }
     for (const kind of ["happyPath", "errorPaths", "edgeCases"] as const) {
       for (const value of boundary.behavior[kind]) if (!behavior[kind].has(value)) throw new Error(`${boundary.id} ${kind} is not frozen in the PRD: ${value}`);
     }

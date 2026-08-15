@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ForgeConfig } from "../src/config/types.js";
 import { TaskExecutionService } from "../src/execution/service.js";
 import { IssuesService } from "../src/issues/service.js";
-import type { IssueDraft } from "../src/issues/types.js";
 import { RemediationService } from "../src/tasks/remediation-service.js";
 import { TaskPreflightService } from "../src/tasks/preflight-service.js";
 import { TasksService } from "../src/tasks/service.js";
@@ -105,10 +104,7 @@ describe("full Forge remediation lifecycle", () => {
     await workItem.approve({ approvedBy: "user", evidence: "Approved" });
     await workItem.freeze();
 
-    const issue: IssueDraft = {
-      id: "I001", deliveryBoundaryId: "DB-01", title: "Deliver value 2", goal: "Expose value 2 without fallback behavior.", deliveryOutcome: "Consumers observe value 2 without fallback behavior.", scope: ["Modify src/value.ts#value"], nonGoals: ["Add fallback behavior"], acceptanceIds: ["AC-01"], behavior: prd.behavior, decisionIds: ["D-01"], impactEvidenceIds: ["E-01"], testSeamNames: ["value command"], verification: ["focused value command", "Read src/value.ts and require value 2"], dependencies: [],
-    };
-    await new IssuesService(workItemRoot).submit([issue]);
+    await new IssuesService(workItemRoot).submit();
 
     const valueCommand = "node -e \"const v=require('fs').readFileSync('src/value.ts','utf8');if(!v.includes('value = 2'))process.exit(1)\"";
     const slices: SliceDraft[] = [{ id: "S001", title: "Value behavior", goal: "Expose value 2", acceptanceIds: ["AC-01"], taskIds: ["T001"], gate: [{ command: valueCommand, timeoutMs: 30_000, proves: "AC-01 value is observable" }] }];

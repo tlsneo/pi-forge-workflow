@@ -18,24 +18,22 @@ Completion criterion: the exact Work Item ID, PRD Generation, PRD Hash, Acceptan
 
 ## 2. Materialize frozen delivery boundaries
 
-Do not choose new delivery boundaries here. The frozen PRD Delivery Plan is authoritative. Materialize `DB-01 → I001`, `DB-02 → I002`, and so on, preserving exact goal, delivery outcome, scope, Acceptance, behavior, Decisions, Evidence, Test Seams, non-goals, verification, and boundary dependencies. If a boundary is missing or cannot become an independently deliverable Issue, stop and return to a PRD Amendment with Grilling rather than inventing Issue-layer product decisions. Do not create horizontal Issues such as “add schema,” “update service,” or “write tests” unless that item is already a frozen independently observable Delivery Boundary.
+Do not draft or copy Issue fields. Call `forge_issues_submit` with only the Work Item root. Runtime derives the complete ordered Issue set directly from the frozen PRD:
 
-Every Issue must have the exact `deliveryBoundaryId` and:
+```text
+DB-01 → I001
+DB-02 → I002
+```
 
-- one outcome-oriented goal and delivery outcome;
-- a focused scope and only frozen PRD non-goals;
-- at least one Acceptance ID;
-- the exact frozen behavior lines it owns;
-- the Decisions, flow-ordered Evidence, Test Seams, and verification obligations needed for that outcome, including applicable ownership, dependency-direction, Fallback, and Composition-Root constraints;
-- only real delivery dependencies on other Issues.
+For every Issue it copies the frozen boundary title, goal, outcome, scope, Acceptance, behavior, Decisions, Evidence, Test Seams, non-goals, verification, and converts boundary dependencies to the matching Issue IDs. PRD validation has already required every boundary to own non-empty Evidence, Test Seams, and the exact ordered verification closure of its Acceptance and Test Seams. If that contract is invalid, PRD submission fails before Review rather than producing an Issue-layer decision.
 
-Use contiguous stable IDs: `I001`, `I002`, and so on. Dependencies must form a DAG. Do not write implementation steps, file edits, Slices, or Micro Tasks here.
+The Issue phase contains no LLM-authored proposal and cannot redesign, widen, reorder, summarize, or repair the frozen Delivery Plan. It writes no implementation steps, file edits, Slices, or Tasks.
 
-Completion criterion: each Issue is independently deliverable and every PRD Acceptance maps to at least one Issue.
+Completion criterion: the deterministic call returns one Issue per frozen Delivery Boundary and complete Acceptance traceability.
 
 ## 3. Generate Local artifacts
 
-Call `forge_issues_submit` once with the complete ordered Issue set. Runtime validates IDs, references, frozen text, dependencies, DAG shape, and full Acceptance traceability; derives all hashes and source bindings; and writes:
+The same `forge_issues_submit` call validates the derived IDs, references, dependencies, DAG shape, and traceability; derives all hashes and source bindings; and writes:
 
 ```text
 issues/
@@ -49,7 +47,7 @@ issues/
 
 `issue.json` is the Issue fact source. `ISSUE.md` and `issues/README.md` are deterministic human views. `manifest.json` is the only entry point for `forge-tasks`.
 
-Submitting the same proposal is idempotent. A different proposal for the same frozen PRD fails closed. If the frozen Delivery Plan must change, create a successor Work Item through `forge-prd`; do not amend the predecessor Issues in place.
+Calling materialization again is idempotent because one frozen PRD has exactly one Issue representation. If the frozen Delivery Plan must change, create a successor Work Item through `forge-prd`; do not amend the predecessor Issues in place.
 
 Completion criterion: `forge_issues_status` returns a Manifest whose traceability covers every PRD Acceptance and whose Artifact Hashes match the generated files.
 

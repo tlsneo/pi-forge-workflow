@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { materializeIssueDrafts } from "../src/issues/materialization.js";
 import { IssuesService } from "../src/issues/service.js";
 import { validateIssueDrafts } from "../src/issues/validation.js";
 import type { IssueDraft } from "../src/issues/types.js";
@@ -68,7 +69,7 @@ function oneIssue(): IssueDraft[] {
   return [{
     id: "I001",
     deliveryBoundaryId: "DB-01",
-    title: "Add configurable CLI timeout",
+    title: "Deliver configurable timeout",
     goal: "Allow CLI users to bound request duration.",
     deliveryOutcome: "Timeout behavior is observable at the client while omission remains compatible.",
     scope: ["Carry timeout through the existing configuration seam"],
@@ -90,7 +91,7 @@ function oneIssue(): IssueDraft[] {
 describe("IssuesService", () => {
   it("generates immutable Local Issue artifacts and a complete Manifest", async () => {
     const { root, issues } = await frozenFixture();
-    const generated = await issues.submit(oneIssue());
+    const generated = await issues.submit();
     expect(generated.idempotent).toBe(false);
     expect(generated.manifest.acceptanceTraceability).toEqual({ "AC-01": ["I001"], "AC-02": ["I001"] });
     expect(generated.manifest.issues[0]?.tracker.mode).toBe("local");
@@ -109,43 +110,46 @@ describe("IssuesService", () => {
       { ...expanded.deliveryBoundaries[0]!, acceptanceIds: ["AC-01"], behavior: { happyPath: expanded.behavior.happyPath, errorPaths: expanded.behavior.errorPaths, edgeCases: [] }, testSeamNames: ["CLI integration"], verification: ["CLI integration test", "Assert the configured client timeout"] },
       { id: "DB-02", title: "Preserve omission compatibility", outcome: "Omission keeps the existing default.", goal: "Omission keeps the existing default.", scope: ["Omission keeps the existing default."], acceptanceIds: ["AC-02"], behavior: { happyPath: [], errorPaths: [], edgeCases: expanded.behavior.edgeCases }, decisionIds: ["D-01"], impactEvidenceIds: ["E-01"], testSeamNames: ["Default behavior"], nonGoals: ["Change retry policy"], verification: ["Default behavior test", "Assert omission keeps the existing default"], dependencies: ["DB-01"], independentlyDeliverable: true, rationale: "Compatibility can be verified and delivered after the explicit path." },
     ];
-    expect(() => validateIssueDrafts(expanded, [
-      { ...oneIssue()[0]!, id: "I001", deliveryBoundaryId: "DB-02", goal: expanded.deliveryBoundaries[1]!.goal, deliveryOutcome: expanded.deliveryBoundaries[1]!.outcome, scope: expanded.deliveryBoundaries[1]!.scope, acceptanceIds: ["AC-02"], behavior: expanded.deliveryBoundaries[1]!.behavior, testSeamNames: ["Default behavior"], verification: expanded.deliveryBoundaries[1]!.verification, dependencies: [] },
-      { ...oneIssue()[0]!, id: "I002", deliveryBoundaryId: "DB-01", goal: expanded.deliveryBoundaries[0]!.goal, deliveryOutcome: expanded.deliveryBoundaries[0]!.outcome, scope: expanded.deliveryBoundaries[0]!.scope, acceptanceIds: ["AC-01"], behavior: expanded.deliveryBoundaries[0]!.behavior, testSeamNames: ["CLI integration"], verification: expanded.deliveryBoundaries[0]!.verification },
-    ])).toThrow("must map to DB-01");
+    expect(materializeIssueDrafts(expanded)).toEqual([
+      {
+        ...oneIssue()[0]!, title: expanded.deliveryBoundaries[0]!.title, acceptanceIds: ["AC-01"], behavior: expanded.deliveryBoundaries[0]!.behavior,
+        testSeamNames: ["CLI integration"], verification: expanded.deliveryBoundaries[0]!.verification,
+      },
+      {
+        ...oneIssue()[0]!, id: "I002", deliveryBoundaryId: "DB-02", title: expanded.deliveryBoundaries[1]!.title,
+        goal: expanded.deliveryBoundaries[1]!.goal, deliveryOutcome: expanded.deliveryBoundaries[1]!.outcome, scope: expanded.deliveryBoundaries[1]!.scope,
+        acceptanceIds: ["AC-02"], behavior: expanded.deliveryBoundaries[1]!.behavior, testSeamNames: ["Default behavior"],
+        verification: expanded.deliveryBoundaries[1]!.verification, dependencies: ["I001"],
+      },
+    ]);
   });
 
   it("materializes every frozen Delivery Boundary exactly once", async () => {
-    const { issues } = await frozenFixture();
     const duplicate = oneIssue();
     duplicate.push({ ...duplicate[0]!, id: "I002" });
-    await expect(issues.submit(duplicate)).rejects.toThrow("mapped to more than one Issue");
+    expect(() => validateIssueDrafts(prd(), duplicate)).toThrow("mapped to more than one Issue");
   });
 
-  it("is idempotent for the same proposal and rejects an in-place rewrite", async () => {
+  it("is idempotent because the frozen PRD has only one deterministic materialization", async () => {
     const { issues } = await frozenFixture();
-    const first = await issues.submit(oneIssue());
-    const second = await issues.submit(oneIssue());
+    const first = await issues.submit();
+    const second = await issues.submit();
     expect(second.idempotent).toBe(true);
     expect(second.manifest.contentHash).toBe(first.manifest.contentHash);
-    const changed = oneIssue();
-    changed[0] = { ...changed[0]!, title: "A different Issue title." };
-    await expect(issues.submit(changed)).rejects.toThrow("successor Work Item");
   });
 
   it("rejects missing Acceptance coverage, unknown frozen references, and dependency cycles", async () => {
-    const { issues } = await frozenFixture();
     const missing = oneIssue();
     missing[0] = { ...missing[0]!, acceptanceIds: ["AC-01"] };
-    await expect(issues.submit(missing)).rejects.toThrow("DB-01");
+    expect(() => validateIssueDrafts(prd(), missing)).toThrow("DB-01");
 
     const unknown = oneIssue();
     unknown[0] = { ...unknown[0]!, impactEvidenceIds: ["E-404"] };
-    await expect(issues.submit(unknown)).rejects.toThrow("Evidence must exactly match DB-01");
+    expect(() => validateIssueDrafts(prd(), unknown)).toThrow("Evidence must exactly match DB-01");
 
     const unknownBoundary = oneIssue();
     unknownBoundary[0] = { ...unknownBoundary[0]!, deliveryBoundaryId: "DB-99" };
-    await expect(issues.submit(unknownBoundary)).rejects.toThrow("unknown Delivery Boundary");
+    expect(() => validateIssueDrafts(prd(), unknownBoundary)).toThrow("unknown Delivery Boundary");
   });
 
   it("requires a frozen PRD Receipt", async () => {
@@ -153,6 +157,6 @@ describe("IssuesService", () => {
     roots.push(root);
     const workItem = new WorkItemService(root);
     await workItem.initialize({ workItemId: "unfrozen", title: "Unfrozen", repositoryRoot: root, repositoryRevision: revision });
-    await expect(new IssuesService(root).submit(oneIssue())).rejects.toThrow("requires a frozen PRD");
+    await expect(new IssuesService(root).submit()).rejects.toThrow("requires a frozen PRD");
   });
 });

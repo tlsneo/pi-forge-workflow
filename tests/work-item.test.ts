@@ -466,6 +466,24 @@ describe("PRD validation", () => {
     ])).toEqual(["Q1"]);
   });
 
+  it("rejects a Delivery Boundary that cannot be materialized as a complete Issue", () => {
+    const emptyVerification = prd();
+    emptyVerification.deliveryBoundaries[0] = { ...emptyVerification.deliveryBoundaries[0]!, verification: [] };
+    expect(() => validatePrd(emptyVerification)).toThrow("DB-01 Verification must not be empty");
+
+    const incompleteVerification = prd();
+    incompleteVerification.deliveryBoundaries[0] = { ...incompleteVerification.deliveryBoundaries[0]!, verification: ["CLI integration test"] };
+    expect(() => validatePrd(incompleteVerification)).toThrow("must exactly contain its owned Acceptance and Test Seam verification");
+
+    const missingEvidence = prd();
+    missingEvidence.deliveryBoundaries[0] = { ...missingEvidence.deliveryBoundaries[0]!, impactEvidenceIds: [] };
+    expect(() => validatePrd(missingEvidence)).toThrow("DB-01 Evidence must not be empty");
+
+    const missingTestSeam = prd();
+    missingTestSeam.deliveryBoundaries[0] = { ...missingTestSeam.deliveryBoundaries[0]!, testSeamNames: [] };
+    expect(() => validatePrd(missingTestSeam)).toThrow("DB-01 Test Seams must not be empty");
+  });
+
   it("accepts no diagrams and rejects mismatched Mermaid kinds", () => {
     expect(() => validatePrd(prd({ diagrams: [] }))).not.toThrow();
     expect(() => validatePrd(prd({
