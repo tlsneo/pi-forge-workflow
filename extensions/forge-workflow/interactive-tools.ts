@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadForgeConfig, resolveForgeProfile } from "../../src/config/resolver.js";
 import type { PiSubagentsAdapter } from "../../src/subagents/adapter.js";
+import { activeForgeWorkItems } from "../../src/subagents/tool-guard.js";
 import { findForgeControlRoot, resolveGitRepository } from "../../src/work-item/repositories.js";
 
 export interface InteractiveExploreRequest {
@@ -18,6 +19,8 @@ export async function startInteractiveExplore(
   if (!request.prompt.trim()) throw new Error("Explore prompt must not be empty");
   if (!request.description.trim()) throw new Error("Explore description must not be empty");
   const controlRoot = await findForgeControlRoot(sessionCwd);
+  const active = await activeForgeWorkItems(controlRoot);
+  if (active.length > 0) throw new Error(`Interactive Explore is unavailable while Forge Work Items are active: ${active.join(", ")}`);
   const repository = await resolveGitRepository(controlRoot, request.repositoryRoot);
   const config = await loadForgeConfig(controlRoot);
   const profile = resolveForgeProfile(config, "interactiveExplore");
@@ -39,10 +42,10 @@ export function registerInteractiveTools(pi: ExtensionAPI, adapter: PiSubagentsA
   pi.registerTool({
     name: "forge_explore_repository",
     label: "Forge Explore Repository",
-    description: "Additional multi-repository entry point for launching the existing read-only Explore Agent in one explicitly selected Git Working Tree through pi-subagents RPC. The normal Agent/Explore capability remains unchanged. This entry point does not request worktree isolation.",
+    description: "Additional multi-repository entry point for launching the existing read-only Explore Agent in one explicitly selected Git Working Tree through pi-subagents RPC. It is available only when no Forge Work Item is active and does not request worktree isolation.",
     promptSnippet: "Explore a selected repository from a multi-repository Control Workspace",
     promptGuidelines: [
-      "Use the additional forge_explore_repository entry point when the repository to inspect differs from the Pi Session cwd, especially from a non-Git or multi-repository Control Workspace. Keep using normal Agent/Explore for ordinary same-repository exploration.",
+      "Use forge_explore_repository only for read-only discovery before a Work Item becomes active. While a Forge Work Item is active, ordinary Agent/Explore/Plan and this interactive Explore entry point are mechanically unavailable; use only the frozen formal Forge surfaces and Binding-bound jobs.",
       "For independent exploration of multiple repositories, call forge_explore_repository once per exact repositoryRoot in one message so the read-only Explore Agents can run concurrently.",
       "Do not request worktree isolation for read-only repository exploration; forge_explore_repository supplies the selected repository cwd through pi-subagents RPC.",
     ],

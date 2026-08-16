@@ -242,6 +242,9 @@ export function validateReview(review: PrdReview, expectedAxis: ReviewAxis, cont
     if (finding.severity === "blocker" && finding.evidence.length === 0) {
       throw new Error(`${review.axis} blocker has no evidence`);
     }
+    if (finding.severity === "blocker" && !finding.suggestedResolution?.trim()) {
+      throw new Error(`${review.axis} blocker requires the smallest sufficient suggestedResolution`);
+    }
   }
   const hasBlocker = review.findings.some((finding) => finding.severity === "blocker");
   if (review.verdict === "passed" && hasBlocker) throw new Error(`${review.axis} review cannot pass with a Blocker`);

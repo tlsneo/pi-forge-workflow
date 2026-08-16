@@ -199,6 +199,7 @@ describe("PrdReviewOrchestrator", () => {
           evidence: ["src/config.ts#Config"],
           violatedRule: "Design must use an existing seam",
           verification: "Read Config",
+          suggestedResolution: "Use only the smallest existing Config seam",
         }] : [],
       });
     }
@@ -211,13 +212,15 @@ describe("PrdReviewOrchestrator", () => {
       return current.blockerVerificationJob?.binding?.agentId === "agent-4"
         && Object.values(current.reviewJobs ?? {}).every((job) => job.status === "completed");
     });
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const verifiedState = await service.store.readState();
     expect(verifiedState.blockerVerificationJob?.status).toBe("starting");
+    expect(spawned).toHaveLength(4);
     expect(spawned[3]?.description).toContain("forge-prd-blocker:");
     expect(spawned[3]?.model.id).toBe("verifier");
   }, 30_000);
 
-  it("explicitly takes over orphan live-looking Review Bindings after coordinator restart", async () => {
+  it("stops known live Review Bindings before explicit coordinator takeover", async () => {
     const { repositoryRoot, workItemRoot, service } = await fixture();
     const bus = new FakeBus();
     let spawned = 0;
@@ -226,13 +229,14 @@ describe("PrdReviewOrchestrator", () => {
       spawned += 1;
       bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${spawned}` } });
     });
+    bus.on("subagents:rpc:stop", (request) => bus.emit(`subagents:rpc:stop:reply:${request.requestId}`, { success: true }));
     const orchestrator = new PrdReviewOrchestrator(new PiSubagentsAdapter(bus, 100));
     await orchestrator.startRequiredReviews(workItemRoot, context(repositoryRoot));
     const resumed = await orchestrator.resumeReviews(workItemRoot, context(repositoryRoot), "Previous coordinator process exited");
     expect(resumed.reviews).toHaveLength(3);
     expect(spawned).toBe(6);
     const state = await service.store.readState();
-    expect(Object.values(state.reviewJobs ?? {}).every((job) => job.attempt === 2 && job.binding?.agentId?.startsWith("agent-"))).toBe(true);
+    expect(Object.values(state.reviewJobs ?? {}).every((job) => job.attempt === 2 && job.status === "starting" && job.binding?.agentId?.startsWith("agent-"))).toBe(true);
   }, 15_000);
 
   it("fails closed when Forge config is absent", async () => {

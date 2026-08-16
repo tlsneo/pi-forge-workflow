@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { stableHash } from "../runtime/hash.js";
 import { appendJsonLine, atomicWriteJson } from "../runtime/store.js";
+import { classifySubagentFailure, recordSubagentFailure, subagentFailureEvent } from "../subagents/failures.js";
 import type {
   TaskPreflightBinding,
   TaskPreflightEvent,
@@ -20,6 +21,23 @@ import type { PreparedTaskPlan } from "./types.js";
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
 const POLICY_VERSION = 1;
+
+function proposalSurfaceHash(proposal: TaskPreflightProposal): string {
+  if (proposal.kind === "remediation") {
+    return stableHash({
+      policyVersion: POLICY_VERSION,
+      kind: "remediation",
+      sourceFindingHash: proposal.sourceFindingHash,
+      sourcePrdHash: proposal.sourcePrdHash,
+      sourceIssueHash: proposal.sourceIssueHash,
+      acceptanceIds: proposal.acceptanceIds,
+      decisionIds: proposal.decisionIds,
+      tasks: proposal.tasks,
+      rerunSliceIds: proposal.rerunSliceIds,
+    });
+  }
+  return stableHash({ policyVersion: POLICY_VERSION, issueHash: proposal.source.issueHash, slices: proposal.slices, tasks: proposal.tasks });
+}
 
 async function exists(path: string): Promise<boolean> {
   try { await access(path, constants.F_OK); return true; } catch { return false; }
@@ -69,7 +87,11 @@ export class TaskPreflightService {
   async readProposal(generation?: number): Promise<TaskPreflightProposal> {
     const state = await this.requireState();
     const selected = generation ?? state.activeProposalGeneration;
-    return JSON.parse(await readFile(join(this.root, "proposals", `proposal-${selected}.json`), "utf8")) as TaskPreflightProposal;
+    const proposal = JSON.parse(await readFile(join(this.root, "proposals", `proposal-${selected}.json`), "utf8")) as TaskPreflightProposal;
+    if (proposal.issueId !== this.issueId || proposal.generation !== selected || proposal.proposalHash !== state.proposalHash || proposal.surfaceHash !== state.surfaceHash || proposalSurfaceHash(proposal) !== proposal.surfaceHash) {
+      throw new Error("Task Preflight Proposal artifact does not match its Runtime identity or Surface Hash");
+    }
+    return proposal;
   }
 
   async proposeRaw(proposal: TaskPreflightProposal, route: TaskPreflightRoute): Promise<{ state: TaskPreflightState; proposal: TaskPreflightProposal; idempotent: boolean }> {
@@ -198,6 +220,7 @@ export class TaskPreflightService {
   async bindAgent(bindingId: string, agentId: string): Promise<TaskPreflightState> {
     return this.transact("task_preflight_agent_bound", (state) => {
       if (state.job.binding?.id !== bindingId) throw new Error("Task Preflight Binding is stale");
+      if (state.job.status === "infrastructure_failed") return;
       if (state.job.binding.agentId && state.job.binding.agentId !== agentId) throw new Error("Task Preflight Binding already has another Agent");
       state.job.binding.agentId = agentId;
     }, { bindingId, agentId });
@@ -206,7 +229,7 @@ export class TaskPreflightService {
   async markStarted(agentId: string): Promise<TaskPreflightState> {
     return this.transact("task_preflight_agent_started", (state) => {
       if (state.job.binding?.agentId !== agentId) throw new Error("Unknown Task Preflight Agent");
-      if (state.job.result) return;
+      if (state.job.status === "infrastructure_failed" || state.job.result) return;
       state.status = "running";
       state.job.status = "running";
     }, { agentId });
@@ -270,45 +293,37 @@ export class TaskPreflightService {
   }
 
   async markTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<TaskPreflightState> {
-    return this.transact("task_preflight_agent_terminal", (state) => {
+    const message = error ?? `Agent ${terminal} without a structured Task Preflight Result`;
+    const failure = classifySubagentFailure(message, "lifecycle");
+    return this.transact(subagentFailureEvent(failure, "task_preflight_agent_terminal"), (state) => {
       if (state.job.binding?.agentId !== agentId) throw new Error("Unknown Task Preflight Agent");
-      if (state.job.result) return;
-      state.job.lastError = error ?? `Agent ${terminal} without a structured Task Preflight Result`;
-      if (state.job.attempt < state.job.maxAttempts) {
-        state.status = terminal === "stopped" || terminal === "aborted" ? "interrupted" : "retry_ready";
-        state.job.status = state.status;
-      } else {
-        state.status = "failed";
-        state.job.status = "failed";
-      }
-    }, { agentId, terminal, ...(error ? { error } : {}) });
+      if (state.job.status === "infrastructure_failed" || state.job.result) return;
+      state.job.lastError = message;
+      const decision = recordSubagentFailure(state.job, failure);
+      state.status = decision.retry
+        ? terminal === "completed" && failure.classification === "semantic" ? "interrupted" : "retry_ready"
+        : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+      state.job.status = state.status;
+    }, { agentId, terminal, failure });
   }
 
   async markSpawnFailed(bindingId: string, error: string): Promise<TaskPreflightState> {
-    return this.transact("task_preflight_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.transact(subagentFailureEvent(failure, "task_preflight_spawn_failed"), (state) => {
       if (state.job.binding?.id !== bindingId) throw new Error("Task Preflight Binding is stale");
       state.job.lastError = error;
-      if (state.job.attempt < state.job.maxAttempts) {
-        state.status = "retry_ready";
-        state.job.status = "retry_ready";
-      } else {
-        state.status = "failed";
-        state.job.status = "failed";
-      }
-    }, { bindingId, error });
+      const decision = recordSubagentFailure(state.job, failure);
+      state.status = decision.retry ? "retry_ready" : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+      state.job.status = state.status;
+    }, { bindingId, error, failure });
   }
 
   async markFrozen(taskPlanHash: string): Promise<TaskPreflightState> {
-    const state = await this.transact("task_plan_frozen_after_preflight", (next) => {
+    return this.transact("task_plan_frozen_after_preflight", (next) => {
       if (next.status !== "passed" || next.job.result?.verdict !== "passed") throw new Error("Task Plan cannot freeze before Task Preflight passes");
       if (next.frozenTaskPlanHash && next.frozenTaskPlanHash !== taskPlanHash) throw new Error("Task Preflight is already bound to another Task Plan hash");
       next.frozenTaskPlanHash = taskPlanHash;
     }, { taskPlanHash });
-    const receipt = await this.readReceipt(state.activeProposalGeneration);
-    if (receipt && receipt.frozenTaskPlanHash !== taskPlanHash) {
-      await atomicWriteJson(join(this.root, "receipts", `proposal-${state.activeProposalGeneration}.json`), { ...receipt, frozenTaskPlanHash: taskPlanHash });
-    }
-    return state;
   }
 
   async markApplied(dagGeneration: number): Promise<TaskPreflightState> {
@@ -319,11 +334,32 @@ export class TaskPreflightService {
     }, { dagGeneration });
   }
 
+  async readResult(generation?: number): Promise<TaskPreflightResult | undefined> {
+    const state = await this.requireState();
+    const selected = generation ?? state.activeProposalGeneration;
+    const path = join(this.root, "results", `proposal-${selected}.json`);
+    return await exists(path) ? JSON.parse(await readFile(path, "utf8")) as TaskPreflightResult : undefined;
+  }
+
   async readReceipt(generation?: number): Promise<TaskPreflightReceipt | undefined> {
     const state = await this.requireState();
     const selected = generation ?? state.activeProposalGeneration;
     const path = join(this.root, "receipts", `proposal-${selected}.json`);
     return await exists(path) ? JSON.parse(await readFile(path, "utf8")) as TaskPreflightReceipt : undefined;
+  }
+
+  async validatePassedEvidence(): Promise<{ result: TaskPreflightResult; receipt: TaskPreflightReceipt }> {
+    const state = await this.requireState();
+    const result = await this.readResult(state.activeProposalGeneration);
+    const receipt = await this.readReceipt(state.activeProposalGeneration);
+    if (!result || !receipt || result.verdict !== "passed" || receipt.verdict !== "passed") throw new Error("Passed Task Preflight evidence is incomplete");
+    const { resultHash, ...resultBase } = result;
+    if (stableHash(resultBase) !== resultHash || state.job.result?.resultHash !== resultHash || receipt.resultHash !== resultHash
+      || receipt.proposalGeneration !== result.proposalGeneration || receipt.proposalHash !== result.proposalHash
+      || receipt.surfaceHash !== result.surfaceHash || receipt.bindingId !== result.bindingId) {
+      throw new Error("Task Preflight Result, Receipt, and Runtime reference do not match");
+    }
+    return { result, receipt };
   }
 
   static createBinding(input: Omit<TaskPreflightBinding, "id" | "spawnRequestId" | "createdAt">): TaskPreflightBinding {

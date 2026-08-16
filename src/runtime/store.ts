@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { stableHash } from "./hash.js";
@@ -248,6 +248,9 @@ export class RuntimeStore {
 
   async doctor(): Promise<{ repaired: boolean; state: IssueRuntimeState }> {
     return this.withLock(async () => {
+      const manifest = await this.readManifest();
+      const initialDag = JSON.parse(await readFile(join(this.root, "generations", "dag-1.json"), "utf8")) as TaskDag;
+      if (manifest.dagHash && stableHash(initialDag) !== manifest.dagHash) throw new Error("Initial DAG Generation hash does not match the Runtime manifest");
       const state = await this.readState();
       const events = await this.readEvents();
       const last = events.at(-1);
@@ -315,32 +318,53 @@ export class RuntimeStore {
     return (await pathExists(path)) ? JSON.parse(await readFile(path, "utf8")) as T : undefined;
   }
 
-  async writeReceipt(taskId: string, receipt: { taskVersion?: number }): Promise<void> {
+  async writeReceipt<T extends { taskVersion?: number }>(taskId: string, receipt: T): Promise<void> {
     const taskVersion = receipt.taskVersion ?? 1;
-    const path = join(this.root, "receipts", `${taskId}-V${String(taskVersion).padStart(3, "0")}.json`);
-    if (await pathExists(path)) throw new Error(`Task Receipt already exists: ${taskId}@V${String(taskVersion).padStart(3, "0")}`);
-    await atomicWriteJson(path, receipt);
+    await this.writeImmutableArtifact(`receipts/${taskId}-V${String(taskVersion).padStart(3, "0")}.json`, receipt);
+  }
+
+  async readAudit<T>(auditId: string): Promise<T | undefined> {
+    const path = join(this.root, "audits", `${auditId}.json`);
+    return await pathExists(path) ? JSON.parse(await readFile(path, "utf8")) as T : undefined;
   }
 
   async writeAudit(auditId: string, receipt: unknown): Promise<void> {
-    const path = join(this.root, "audits", `${auditId}.json`);
-    if (await pathExists(path)) throw new Error(`Audit receipt already exists: ${auditId}`);
-    await atomicWriteJson(path, receipt);
+    await this.writeImmutableArtifact(`audits/${auditId}.json`, receipt);
+  }
+
+  async writeImmutableArtifact(relativePath: string, artifact: unknown): Promise<void> {
+    const path = join(this.root, relativePath);
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.${randomUUID()}.immutable.tmp`;
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(artifact, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await link(temporary, path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = JSON.parse(await readFile(path, "utf8")) as unknown;
+      if (stableHash(existing) !== stableHash(artifact)) throw new Error(`Immutable Runtime artifact already exists with different content: ${relativePath}`);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  }
+
+  async readImmutableArtifact<T>(relativePath: string): Promise<T | undefined> {
+    const path = join(this.root, relativePath);
+    return await pathExists(path) ? JSON.parse(await readFile(path, "utf8")) as T : undefined;
   }
 
   async writeTaskConformanceArtifact(relativePath: string, artifact: unknown): Promise<void> {
-    const path = join(this.root, relativePath);
-    if (await pathExists(path)) {
-      const existing = JSON.parse(await readFile(path, "utf8")) as unknown;
-      if (stableHash(existing) === stableHash(artifact)) return;
-      throw new Error(`Task Conformance artifact already exists with different content: ${relativePath}`);
-    }
-    await atomicWriteJson(path, artifact);
+    return this.writeImmutableArtifact(relativePath, artifact);
   }
 
   async readTaskConformanceArtifact<T>(relativePath: string): Promise<T | undefined> {
-    const path = join(this.root, relativePath);
-    return await pathExists(path) ? JSON.parse(await readFile(path, "utf8")) as T : undefined;
+    return this.readImmutableArtifact<T>(relativePath);
   }
 
   async withLock<T>(operation: () => Promise<T>): Promise<T> {

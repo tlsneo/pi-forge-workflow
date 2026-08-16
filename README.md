@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 A tag or commit may be pinned:
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.7.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.8.0
 ```
 
 ### Install from a local checkout
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 For project-local Pi installation, add `-l` to `pi install`.
 
-> This repository currently has `"private": true` and version `0.7.0`, so the documented distribution path is Git or a local checkout, not npm publication.
+> This repository currently has `"private": true` and version `0.8.0`, so the documented distribution path is Git or a local checkout, not npm publication.
 
 ## Public workflow
 
@@ -92,7 +92,7 @@ workspace/                 # no .git required
 
 Start Pi from `workspace`, run `forge-prd`, and select a Target Repository from `forge_prd_repositories` when more than one is found. Forge asks Git for the canonical top-level Working Tree, so the same path-based mechanism supports single repositories, monorepo subdirectories, nested repositories, submodules, and linked worktrees without layout-specific Runtime branches. The selected Repository is frozen on the Work Item and inherited by Issues and Tasks; the current release keeps one Work Item in one Git repository.
 
-For ad hoc read-only investigation across repositories, `forge_explore_repository` is an additional entry point to the existing `Explore` Agent. It accepts a Target Repository path plus a self-contained investigation prompt, then spawns through pi-subagents RPC with `cwd` set to that Repository and without requesting worktree isolation. Multiple calls can inspect independent repositories concurrently. The normal `Agent` → `Explore` capability remains unchanged and is still appropriate when the Pi Session already runs in the Repository being inspected.
+For ad hoc read-only investigation across repositories, `forge_explore_repository` is an additional entry point to the existing `Explore` Agent. It accepts a Target Repository path plus a self-contained investigation prompt, then spawns through pi-subagents RPC with `cwd` set to that Repository and without requesting worktree isolation. Multiple calls can inspect independent repositories concurrently before a Work Item is active. Outside an active Forge Work Item, the normal `Agent` capability remains available. While any Work Item under the current Control Root is active, mechanical guards block ordinary `Agent` invocations—including `Explore` and `Plan` subagent types—and interactive `forge_explore_repository`, so none can substitute for routed, Binding-bound Forge jobs. Formal Forge RPC spawning remains available.
 
 ## Architecture
 
@@ -198,7 +198,7 @@ tasks/T003/TASK-V001.md
 A Task normally has:
 
 - one primary `path#Symbol` edit point;
-- one to three exact Reads and up to three inseparable Writes;
+- normally one to three exact Reads and Writes; a behavior proven inseparable may use up to five, while six or more is mechanically rejected;
 - ordered `BP-01...` Steps with exact instructions and Expected Evidence;
 - an Expected Patch Shape, Forbidden Changes, and fail-closed Stop Conditions;
 - explicit Produces, Consumes, Out of Scope, and Acceptance ownership;
@@ -219,6 +219,12 @@ Every Task contract carries a fixed policy:
 - preserve nearby naming, control-flow, error, import, and test conventions;
 - keep app entry points and Composition Roots limited to wiring and orchestration;
 - split by coherent responsibility, not line count, while avoiding one-function pass-through Modules.
+
+The accompanying **Proportionality Policy**, informed by [HERO — Anti-OverDefense](https://github.com/wanshuiyin/HERO-Anti-OverDefense), bounds proposed work without suppressing discovery: every guard, compatibility path, abstraction, dependency, artifact, version, check, audit Finding, or repair must trace to frozen requirements, a documented repository rule, or a failure reachable through supported use. Checks must settle a live uncertainty or verify a frozen obligation and change the next action on failure. Explicit security, migration, compatibility, verification, review, and mechanical integrity requirements remain mandatory. Passing with no Findings is valid, and execution stops when the requested artifact and authoritative verification are complete.
+
+Subagent failures are classified separately from product semantics. Recognizable `503`/service-capacity failures, safe RPC timeouts, transport failures, and terminated lifecycle bindings create append-only `infrastructure_retry_scheduled` events and use a separate bounded infrastructure budget. They do not consume Worker or Reviewer semantic attempts. A timeout after a spawn request was emitted has an unknowable outcome under pi-subagents RPC v2, so Forge records `infrastructure_spawn_outcome_unknown` and fails closed rather than spawning a possible duplicate live Agent. Exhaustion ends in explicit `infrastructure_failed` state rather than a fabricated product Blocker.
+
+Standard and High Assurance final Auditors now receive compact, immutable axis surfaces with independent Surface Hashes. After a verified repair, Runtime deterministically invalidates Acceptance / Integration plus the axes that originated confirmed Findings, appends the repair evidence only to those surfaces, and carries a passed axis only when its recomputed Surface Hash is unchanged. Rejected Findings similarly rerun only their originating axes. Carried reviews remain visible in the final Receipt through `carriedFrom` evidence.
 
 ### 6. Immutable execution identity
 
@@ -258,7 +264,7 @@ Audit Finding
 → additive DAG generation
 → repair Worker
 → affected Slice Gates
-→ fresh three-axis audit
+→ fresh affected-axis audit + hash-verified carried axes
 ```
 
 Architecture changes, public Interface changes, scope changes, missing evidence, unsafe repository operations, or unresolved product choices stop at an immutable Human Decision Gate. Recording an answer and resuming execution are separate actions.
@@ -272,6 +278,9 @@ Architecture changes, public Interface changes, scope changes, missing evidence,
 - Full Acceptance traceability from PRD to Issue, Slice, Task, Gate, and Audit.
 - Model profiles and role-based routing through `.pi/forge.json`.
 - Binding-bound `pi-subagents` Workers, Reviewers, Verifiers, and Planners.
+- Mechanical ordinary-Agent guard while a Forge Work Item is active.
+- Separate bounded infrastructure retry records for RPC, service, transport, and lifecycle failures.
+- Compact axis-specific final Audit surfaces with deterministic incremental re-audit.
 - Independent Task Preflight before Task contracts are frozen.
 - Decision-free Blueprint Steps with stable IDs, Expected Evidence, Expected Patch Shape, Forbidden Changes, and Stop Conditions.
 - Exact Task context, declared Write boundaries, and Handoff traceability for every Blueprint Step.
@@ -467,7 +476,7 @@ After changing Extension or Skill files in a running Pi session, use `/reload`.
 - Evidence mapping and minimum-sufficient design selection run inside `forge-prd`; there are no separate Map, Design, Options, or Spec artifacts.
 - There is no Forge-specific progress UI.
 - Automatic lifecycle continuation requires a live Pi session; a one-shot `pi -p` process is unsuitable for long-running background execution.
-- Recovery relies on Runtime state and lifecycle events because richer `pi-subagents` status/resume RPC is not yet available.
+- Recovery relies on Runtime state and lifecycle events because richer `pi-subagents` status/resume RPC is not yet available. Failures known to occur before spawn are retried as infrastructure. A timed-out spawn request is fail-closed because Forge cannot query whether the remote process started; an already-running Agent still requires an eventual lifecycle event.
 - The project is pre-release and its artifact schemas may still change.
 
 ## Security model

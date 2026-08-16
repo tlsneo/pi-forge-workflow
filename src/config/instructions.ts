@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { proportionalityPolicyLines } from "../policy/proportionality.js";
 import type { ForgeConfig, ForgeInstructionFile } from "./types.js";
 
 export const FORGE_INSTRUCTIONS_START = "<!-- pi-forge-workflow:start -->";
@@ -53,6 +54,9 @@ export function renderForgeInstructionBlock(config: ForgeConfig): string {
   const contextRule = config.instructions?.templateVersion
     ? "- During `forge-prd` discovery, load applicable Repository Context sources declared in `.pi/forge.json` and carry their constraints into the frozen PRD.\n"
     : "";
+  const proportionalityPolicy = (config.instructions?.templateVersion ?? 0) >= 2
+    ? `\n### Proportionality Policy\n\n${proportionalityPolicyLines("planning").join("\n")}\n`
+    : "";
   return `${FORGE_INSTRUCTIONS_START}
 ## Forge workflow
 
@@ -63,7 +67,7 @@ ${contextRule}- Treat frozen PRD, Issue, Slice, and Task contracts as authoritat
 - Workers follow their exact frozen versioned Task contract such as \`TASK-V001.md\`; the coordinator schedules and verifies without editing product code.
 - Treat Agent termination as a lifecycle event, not Task or Review completion.
 - Start \`forge-run\` from a clean committed Git baseline; it creates scoped commits only after authoritative verification.
-${FORGE_INSTRUCTIONS_END}`;
+${proportionalityPolicy}${FORGE_INSTRUCTIONS_END}`;
 }
 
 export interface ManagedInstructionPlan {

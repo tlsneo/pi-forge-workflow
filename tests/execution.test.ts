@@ -85,6 +85,9 @@ async function submitConformance(runtime: RuntimeService, taskId: string, verdic
 describe("TaskExecutionService", () => {
   it("turns a failed Slice Gate into the existing Remediation planning path", async () => {
     const { repositoryRoot, runtimeRoot, runtime, binding } = await fixture(undefined, "node -e \"process.exit(1)\"");
+    await runtime.store.transact("test_multi_command_gate", (state) => {
+      state.sliceGates!.S001!.commands.push({ command: "node -e \"process.exit(0)\"", timeoutMs: 30_000, proves: "secondary evidence" });
+    });
     await writeFile(join(repositoryRoot, "src", "value.ts"), "export const value = 2;\n");
     await runtime.submitHandoff(binding.id, { changedFiles: ["src/value.ts"], verification: [], produced: ["value 2"] });
     await runtime.markAgentTerminal("agent-1", "completed");
@@ -93,6 +96,7 @@ describe("TaskExecutionService", () => {
     const blocked = await execution.runReadySliceGates();
     expect(blocked.issueStatus).toBe("blocked");
     expect(blocked.remediationPlan).toMatchObject({ source: "slice_gate", sourceSliceId: "S001", status: "awaiting_proposal" });
+    expect(blocked.sliceGates?.S001?.verification).toHaveLength(2);
   });
 
   it("authoritatively verifies, commits, receipts, and passes the Slice Gate", async () => {
@@ -127,9 +131,9 @@ describe("TaskExecutionService", () => {
     let finalState = await runtime.status();
     for (const axis of ["standards", "acceptance_integration", "architecture_minimality"] as IssueAuditAxis[]) {
       const job = finalState.auditJobs![axis];
-      const auditBinding = RuntimeService.createAuditBinding({ axis, attempt: 1, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: finalState.generation });
+      const auditBinding = RuntimeService.createAuditBinding({ axis, ...(job.surface ? { surfaceHash: job.surface.surfaceHash } : {}), attempt: 1, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: finalState.generation });
       await runtime.claimAuditJob(axis, auditBinding);
-      finalState = await runtime.submitAudit(auditBinding.id, axis, "passed", []);
+      finalState = await runtime.submitAudit(auditBinding.id, axis, "passed", [], job.surface?.surfaceHash);
     }
     expect(finalState.issueStatus).toBe("completed");
     expect(await readFile(join(runtimeRoot, "audits", "issue-final.json"), "utf8")).toContain("architecture_minimality");
@@ -267,6 +271,7 @@ describe("TaskExecutionService", () => {
     await runtime.markAgentTerminal("agent-1", "completed");
     await new TaskExecutionService(runtimeRoot).finalizeTask("T001");
     await runtime.store.transact("simulate_stale_completed_task_handoff", (state) => {
+      delete state.tasks.T001!.receipt;
       state.tasks.T001!.status = "blocked";
       state.tasks.T001!.verificationStatus = "failed";
       state.tasks.T001!.verificationError = "later Task diff was attributed to T001";

@@ -91,6 +91,26 @@ describe("interactive repository Explore", () => {
     expect(spawn.mock.calls[0]?.[0]).not.toHaveProperty("isolation");
   });
 
+  it("blocks interactive Explore while a Forge Work Item is active", async () => {
+    const controlRoot = await mkdtemp(join(tmpdir(), "pi-forge-interactive-active-"));
+    roots.push(controlRoot);
+    await mkdir(join(controlRoot, ".pi"), { recursive: true });
+    await writeFile(join(controlRoot, ".pi", "forge.json"), JSON.stringify(config()));
+    const repositoryRoot = join(controlRoot, "repo");
+    await initRepository(repositoryRoot);
+    const workItemRuntime = join(controlRoot, ".forge", "work-items", "WI-0001-active", "runtime");
+    await mkdir(workItemRuntime, { recursive: true });
+    await writeFile(join(workItemRuntime, "state.json"), JSON.stringify({ workItemId: "WI-0001-active", status: "discovery" }));
+    const adapter = { ping: vi.fn(), spawn: vi.fn() } as unknown as PiSubagentsAdapter;
+
+    await expect(startInteractiveExplore(controlRoot, {
+      repositoryRoot,
+      prompt: "Inspect one bounded symbol.",
+      description: "Inspect bounded symbol",
+    }, adapter)).rejects.toThrow("unavailable while Forge Work Items are active");
+    expect(adapter.spawn).not.toHaveBeenCalled();
+  });
+
   it("finds the Control Root when Pi starts inside one selected Repo", async () => {
     const controlRoot = await mkdtemp(join(tmpdir(), "pi-forge-interactive-nested-"));
     roots.push(controlRoot);

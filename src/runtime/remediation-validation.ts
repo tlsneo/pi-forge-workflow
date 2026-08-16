@@ -1,8 +1,10 @@
 import { isAbsolute, normalize, sep } from "node:path";
 import { validateBlueprintSteps } from "./blueprint.js";
 import { validateDag } from "./dag.js";
+import { repositoryEvidenceSeams } from "./evidence.js";
 import { RuntimeService } from "./service.js";
 import type { IssueAuditFinding, TaskContract, TaskDag } from "./types.js";
+import { validateTaskContextBudget } from "../tasks/context-budget.js";
 import type { MicroTaskDraft } from "../tasks/types.js";
 
 function text(value: string, label: string): void {
@@ -22,12 +24,13 @@ export function validateRemediationDrafts(input: {
   confirmedFindings: IssueAuditFinding[];
   knownSliceIds: Set<string>;
   modelProfiles: Set<string>;
+  requireEvidenceReadMatch?: boolean;
 }): TaskContract[] {
   if (input.drafts.length === 0) throw new Error("At least one Remediation Micro Task is required");
   if (input.confirmedFindings.length === 0) throw new Error("Remediation requires confirmed Audit Findings");
   const firstExpected = input.currentDag.tasks.reduce((max, task) => Math.max(max, Number(task.id.slice(1))), 0) + 1;
   const ids = new Set(input.currentDag.tasks.map((task) => task.id));
-  const confirmedEvidence = new Set(input.confirmedFindings.flatMap((finding) => finding.evidence));
+  const confirmedEvidence = new Set(repositoryEvidenceSeams(input.confirmedFindings.flatMap((finding) => finding.evidence)));
   const contracts: TaskContract[] = [];
 
   for (const [index, draft] of input.drafts.entries()) {
@@ -40,16 +43,15 @@ export function validateRemediationDrafts(input: {
     if (!input.knownSliceIds.has(draft.sliceId)) throw new Error(`${draft.id} references unknown Slice ${draft.sliceId}`);
     safePath(draft.editPoint.path, `${draft.id} editPoint.path`);
     text(draft.editPoint.symbol, `${draft.id} editPoint.symbol`);
-    if (draft.reads.length < 1 || draft.reads.length > 3) throw new Error(`${draft.id} must read between 1 and 3 exact files`);
+    validateTaskContextBudget(draft.id, draft.reads, draft.writes);
     for (const read of draft.reads) {
       safePath(read.path, `${draft.id} read path`);
       text(read.symbol, `${draft.id} read symbol`);
       text(read.reason, `${draft.id} read reason`);
     }
-    if (draft.writes.length < 1 || draft.writes.length > 3) throw new Error(`${draft.id} must write between 1 and 3 paths`);
     for (const path of draft.writes) safePath(path, `${draft.id} write`);
     if (!draft.writes.includes(draft.editPoint.path)) throw new Error(`${draft.id} primary Edit Point must appear in Writes`);
-    if (!draft.reads.some((read) => confirmedEvidence.has(`${read.path}#${read.symbol}`) || confirmedEvidence.has(read.path))) {
+    if (input.requireEvidenceReadMatch !== false && !draft.reads.some((read) => confirmedEvidence.has(`${read.path}#${read.symbol}`) || confirmedEvidence.has(read.path))) {
       throw new Error(`${draft.id} Reads do not include any confirmed Finding evidence seam`);
     }
     const blueprint = validateBlueprintSteps(draft.id, draft.implementationBlueprint);

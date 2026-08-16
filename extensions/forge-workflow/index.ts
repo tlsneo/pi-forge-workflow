@@ -6,6 +6,7 @@ import { resolveModelProfile } from "../../src/model/router.js";
 import { RuntimeService } from "../../src/runtime/service.js";
 import type { IssueAuditAxis, IssueAuditFinding, TaskConformanceFinding, TaskContract, TaskHandoff } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
+import { registerFormalAgentToolGuard } from "../../src/subagents/tool-guard.js";
 import { AuditRemediationOrchestrator } from "./audit-remediation-orchestrator.js";
 import { registerInitTools } from "./init-tools.js";
 import { registerInteractiveTools } from "./interactive-tools.js";
@@ -65,6 +66,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
   const taskConformanceOrchestrator = new TaskConformanceOrchestrator(adapter);
   const taskPreflightOrchestrator = new TaskPreflightOrchestrator(adapter);
   const auditRemediationOrchestrator = new AuditRemediationOrchestrator(adapter);
+  registerFormalAgentToolGuard(pi);
   registerInitTools(pi, adapter);
   registerInteractiveTools(pi, adapter);
   registerPrdTools(pi, prdReviewOrchestrator);
@@ -97,6 +99,10 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       const frontier = await service.frontier();
       if (frontier.length > 0) {
         await startFrontier(runtimeRoot, undefined, extensionContext!);
+      } else if (state.remediationPlan?.status === "preflight") {
+        await auditRemediationOrchestrator.resumePreflight(runtimeRoot, extensionContext!);
+      } else if (state.remediationPlan?.status === "awaiting_proposal") {
+        await auditRemediationOrchestrator.startPlanner(runtimeRoot, extensionContext!);
       } else if (state.issueStatus === "auditing") {
         await issueAuditOrchestrator.start(runtimeRoot, extensionContext!);
       }
@@ -129,6 +135,11 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
     const location = bindingLocations.get(parsed.bindingId);
     if (!location || location.taskId !== parsed.taskId) return undefined;
     const service = new RuntimeService(location.runtimeRoot);
+    const state = await service.status();
+    if (state.tasks[location.taskId]?.status === "infrastructure_failed") {
+      await adapter.stop(event.id).catch(() => undefined);
+      return undefined;
+    }
     await service.bindAgent(location.taskId, location.bindingId, event.id);
     agentLocations.set(event.id, location);
     return location;
@@ -327,8 +338,11 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       const manifest = await service.store.readManifest();
       let state = await service.status();
       const execution = new TaskExecutionService(runtimeRoot);
+      const dag = await service.store.readDag();
       for (const task of Object.values(state.tasks)) {
-        if (task.receipt && (task.status !== "completed" || task.gitStatus !== "receipted" || task.verificationStatus !== "passed" || task.verificationError || task.blocker)) {
+        const contract = dag.tasks.find((candidate) => candidate.id === task.id);
+        const diskReceipt = contract ? await service.store.readReceipt(task.id, contract.version) : undefined;
+        if (diskReceipt && (task.status !== "completed" || task.gitStatus !== "receipted" || task.verificationStatus !== "passed" || !task.receipt || task.verificationError || task.blocker)) {
           await execution.reconcileTaskReceipt(task.id);
           state = await service.status();
         }
@@ -342,6 +356,12 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       for (const task of Object.values(state.tasks)) {
         if (task.status === "awaiting_commit" && task.conformanceJob?.result?.verdict === "passed") {
           await execution.commitAuditedTask(task.id);
+          state = await service.status();
+        }
+      }
+      for (const task of Object.values(state.tasks)) {
+        if (task.status === "starting" && task.binding && !task.binding.agentId) {
+          await service.markSpawnFailed(task.id, "Spawn outcome unknown during recovery before Worker binding");
           state = await service.status();
         }
       }
@@ -379,11 +399,40 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         }
       }
       state = await execution.runReadySliceGates();
+      const finalReceipt = await service.store.readAudit<Record<string, unknown>>("issue-final");
+      if (finalReceipt && state.issueStatus !== "completed") {
+        state = await service.markIssueCompleted(finalReceipt);
+        return text(`Reconciled Issue ${state.issueId} from its immutable final Receipt.`, { runtimeRoot, state, receiptPath: "audits/issue-final.json" });
+      }
+      const auditAxes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
+      if (!finalReceipt && auditAxes.every((axis) => state.audits?.[axis]?.verdict === "passed")) {
+        state = await service.markIssueCompleted({ schemaVersion: 1, issueId: state.issueId, audits: state.audits, completedAt: new Date().toISOString() });
+        return text(`Reconstructed the missing final Receipt and completed Issue ${state.issueId}.`, { runtimeRoot, state, receiptPath: "audits/issue-final.json" });
+      }
       const frontier = await service.frontier();
       if (frontier.length > 0) return startFrontier(runtimeRoot, signal, ctx);
-      if (state.remediationPlan?.source === "slice_gate" && state.remediationPlan.status === "awaiting_proposal") {
+      const pendingAuditJobs = Object.values(state.auditJobs ?? {}).some((job) => ["pending", "retry_ready", "interrupted", "starting", "running"].includes(job.status) && !job.result);
+      if (pendingAuditJobs && ["auditing", "blocked"].includes(state.issueStatus)) {
+        const auditSpawns = await issueAuditOrchestrator.start(runtimeRoot, ctx);
+        return text(`Started or resumed ${auditSpawns.filter((spawn) => spawn.status === "started").length} final Issue Auditors.`, { runtimeRoot, frontier, state: await service.status(), auditSpawns });
+      }
+      const auditBlockers = auditAxes.flatMap((axis) => state.audits?.[axis]?.findings.filter((finding) => finding.severity === "blocker") ?? []);
+      if (state.issueStatus === "blocked" && auditAxes.every((axis) => state.audits?.[axis]) && auditBlockers.length > 0 && !state.auditBlockerVerifierJob) {
+        const verifier = await auditRemediationOrchestrator.startVerifier(runtimeRoot, ctx);
+        return text("Created the missing independent final Audit Blocker Verifier.", { runtimeRoot, frontier, state: await service.status(), verifier });
+      }
+      if (state.auditBlockerVerifierJob && ["pending", "retry_ready", "interrupted"].includes(state.auditBlockerVerifierJob.status)) {
+        const verifier = await auditRemediationOrchestrator.startVerifier(runtimeRoot, ctx);
+        return text("Started or resumed the independent final Audit Blocker Verifier.", { runtimeRoot, frontier, state: await service.status(), verifier });
+      }
+      if (state.remediationPlan?.status === "preflight") {
+        const preflight = await auditRemediationOrchestrator.resumePreflight(runtimeRoot, ctx);
+        return text("Resumed the bounded Remediation Task Preflight.", { runtimeRoot, frontier, state: await service.status(), preflight });
+      }
+      if (state.remediationPlan?.status === "awaiting_proposal") {
         const planner = await auditRemediationOrchestrator.startPlanner(runtimeRoot, ctx);
-        return text(`Slice Gate ${state.remediationPlan.sourceSliceId} failed and started the bounded Remediation Planner.`, { runtimeRoot, frontier, state: await service.status(), planner });
+        const source = state.remediationPlan.source === "slice_gate" ? `Slice Gate ${state.remediationPlan.sourceSliceId}` : "confirmed final Audit Findings";
+        return text(`${source} started the bounded Remediation Planner.`, { runtimeRoot, frontier, state: await service.status(), planner });
       }
       if (state.issueStatus === "auditing") {
         const auditSpawns = await issueAuditOrchestrator.start(runtimeRoot, ctx);
@@ -435,7 +484,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       const frontier = await service.frontier();
       let continuation: unknown;
       if (frontier.length > 0) continuation = await startFrontier(runtimeRoot, undefined, ctx);
-      else if (state.remediationPlan?.source === "slice_gate" && state.remediationPlan.status === "awaiting_proposal") continuation = await auditRemediationOrchestrator.startPlanner(runtimeRoot, ctx);
+      else if (state.remediationPlan?.status === "awaiting_proposal") continuation = await auditRemediationOrchestrator.startPlanner(runtimeRoot, ctx);
       else if (state.issueStatus === "auditing") continuation = await issueAuditOrchestrator.start(runtimeRoot, ctx);
       const message = params.verdict === "passed"
         ? `${task.id} passed Task Conformance and was committed with an immutable Receipt.`
@@ -454,6 +503,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
       runtimeRoot: RuntimeRoot,
       bindingId: Type.String(),
       axis: Type.Union([Type.Literal("standards"), Type.Literal("acceptance_integration"), Type.Literal("architecture_minimality")]),
+      surfaceHash: Type.Optional(Type.String()),
       verdict: Type.Union([Type.Literal("passed"), Type.Literal("blocked")]),
       findings: Type.Array(Type.Object({
         id: Type.String(),
@@ -472,9 +522,12 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
         params.axis as IssueAuditAxis,
         params.verdict,
         params.findings as IssueAuditFinding[],
+        params.surfaceHash,
       );
       await issueAuditOrchestrator.notifyResult(runtimeRoot, state);
-      const verifier = state.issueStatus === "blocked" ? await auditRemediationOrchestrator.startVerifier(runtimeRoot, ctx) : undefined;
+      const auditAxes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
+      const allAxisResultsSubmitted = auditAxes.every((axis) => state.audits?.[axis]);
+      const verifier = state.issueStatus === "blocked" && allAxisResultsSubmitted ? await auditRemediationOrchestrator.startVerifier(runtimeRoot, ctx) : undefined;
       const blockers = Object.entries(state.audits ?? {}).flatMap(([axis, audit]) =>
         (audit?.findings ?? []).filter((finding) => finding.severity === "blocker").map((finding) => ({ axis, ...finding })),
       );

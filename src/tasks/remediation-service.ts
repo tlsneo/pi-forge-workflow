@@ -4,8 +4,8 @@ import { loadForgeConfig, resolveForgeProfile } from "../config/resolver.js";
 import { stableHash } from "../runtime/hash.js";
 import { validateRemediationDrafts } from "../runtime/remediation-validation.js";
 import { RuntimeService } from "../runtime/service.js";
-import type { DagAmendment, IssueAuditFinding } from "../runtime/types.js";
-import { atomicWriteJson, atomicWriteText } from "../runtime/store.js";
+import type { AuditBlockerVerifierJob, AuditBlockerVerifierReview, DagAmendment, IssueAuditFinding } from "../runtime/types.js";
+import { atomicWriteText } from "../runtime/store.js";
 import { renderTask } from "./renderer.js";
 import { TaskPreflightService } from "./preflight-service.js";
 import type { TaskPreflightProposal, TaskPreflightRoute } from "./preflight-types.js";
@@ -31,19 +31,45 @@ export class RemediationService {
     return new TaskPreflightService(this.workItemRoot, issueId, "remediation");
   }
 
+  private async blockerVerification(job: AuditBlockerVerifierJob | undefined): Promise<AuditBlockerVerifierReview> {
+    if (!job?.result) throw new Error("Audit Remediation requires a completed Blocker Verification");
+    if ("results" in job.result) {
+      const legacyHash = stableHash({ bindingId: job.result.bindingId, findingHash: job.result.findingHash, results: job.result.results });
+      if (job.result.resultHash && job.result.resultHash !== legacyHash) throw new Error("Legacy Audit Blocker Verification result hash is invalid");
+      return { ...job.result, resultHash: legacyHash, artifactPath: job.result.artifactPath ?? "" };
+    }
+    const review = await this.runtime.store.readImmutableArtifact<AuditBlockerVerifierReview>(job.result.artifactPath);
+    const reviewHash = review ? stableHash({ bindingId: review.bindingId, findingHash: review.findingHash, results: review.results }) : undefined;
+    if (!review || review.bindingId !== job.result.bindingId || review.findingHash !== job.result.findingHash || review.findingHash !== job.findingHash || reviewHash !== job.result.resultHash || (review.resultHash && review.resultHash !== reviewHash)) {
+      throw new Error("Audit Blocker Verification artifact does not match its Runtime reference");
+    }
+    return { ...review, resultHash: reviewHash, artifactPath: review.artifactPath ?? job.result.artifactPath };
+  }
+
   async propose(drafts: MicroTaskDraft[], rerunSliceIds: string[]): Promise<{ proposal: TaskPreflightProposal; state: Awaited<ReturnType<TaskPreflightService["status"]>>; route: TaskPreflightRoute; idempotent: boolean }> {
     const state = await this.runtime.status();
     const plan = state.remediationPlan;
     const verifier = state.auditBlockerVerifierJob;
     if (!plan || plan.status !== "awaiting_proposal") throw new Error("Runtime is not awaiting a Remediation Proposal");
-    const confirmedFindings: IssueAuditFinding[] = plan.source === "slice_gate"
-      ? [{ id: plan.confirmedFindingIds[0]!, severity: "blocker", message: state.sliceGates?.[plan.sourceSliceId!]?.error ?? "Slice Gate failed", evidence: state.sliceGates?.[plan.sourceSliceId!]?.verification?.flatMap((result) => [result.command, result.keyOutput ?? ""]).filter(Boolean) ?? [], violatedRule: `Slice ${plan.sourceSliceId} Gate must pass`, verification: state.sliceGates?.[plan.sourceSliceId!]?.commands.map((command) => command.command).join("; ") ?? "Rerun Slice Gate" }]
-      : (() => {
-          if (!verifier?.result) throw new Error("Audit Remediation requires a completed Blocker Verification");
-          const confirmedIds = new Set(verifier.result.results.filter((result) => result.status === "confirmed").map((result) => result.findingId));
-          return verifier.findings.filter((reference) => confirmedIds.has(reference.findingId)).map((reference) => reference.finding);
-        })();
     const dag = await this.runtime.store.readDag();
+    const verifierReview = plan.source === "audit" ? await this.blockerVerification(verifier) : undefined;
+    const confirmedFindings: IssueAuditFinding[] = plan.source === "slice_gate"
+      ? [{
+          id: plan.confirmedFindingIds[0]!,
+          severity: "blocker",
+          message: state.sliceGates?.[plan.sourceSliceId!]?.error ?? "Slice Gate failed",
+          evidence: state.sliceGates?.[plan.sourceSliceId!]?.verification?.flatMap((result) => [result.command, result.keyOutput ?? ""]).filter(Boolean) ?? [],
+          violatedRule: `Slice ${plan.sourceSliceId} Gate must pass`,
+          verification: state.sliceGates?.[plan.sourceSliceId!]?.commands.map((command) => command.command).join("; ") ?? "Rerun Slice Gate",
+          suggestedResolution: `Repair only the repository seams owned by Slice ${plan.sourceSliceId} and rerun its frozen Gate`,
+        }]
+      : (() => {
+          const confirmedResults = new Map(verifierReview!.results.filter((result) => result.status === "confirmed").map((result) => [result.findingId, result]));
+          return verifier!.findings.filter((reference) => confirmedResults.has(reference.findingId)).map((reference) => ({
+            ...reference.finding,
+            evidence: [...new Set([...reference.finding.evidence, ...confirmedResults.get(reference.findingId)!.evidence])],
+          }));
+        })();
     const manifest = await this.runtime.store.readManifest();
     const config = await loadForgeConfig(manifest.controlRoot);
     const workItemManifest = await new WorkItemService(this.workItemRoot).store.readManifest();
@@ -61,6 +87,7 @@ export class RemediationService {
       confirmedFindings,
       knownSliceIds: new Set(Object.keys(state.sliceGates ?? {})),
       modelProfiles: new Set(Object.keys(config.models.profiles)),
+      requireEvidenceReadMatch: plan.source === "audit",
     });
     const uniqueSlices = [...new Set(rerunSliceIds)].sort();
     if (uniqueSlices.length === 0) throw new Error("Remediation must rerun at least one affected Slice Gate");
@@ -123,6 +150,7 @@ export class RemediationService {
     const preflight = this.preflightService(state.issueId);
     const preflightState = await preflight.status();
     const proposal = await preflight.readProposal();
+    await preflight.validatePassedEvidence();
     if (!preflightState || preflightState.status !== "passed" || preflightState.job.result?.verdict !== "passed" || proposal.kind !== "remediation") throw new Error("Remediation Task Preflight has not passed");
     if (proposal.sourceFindingHash !== plan.findingHash || proposal.runtimeRoot !== this.runtimeRoot) throw new Error("Remediation Proposal is stale");
     const workItemManifest = await new WorkItemService(this.workItemRoot).store.readManifest();
@@ -132,16 +160,27 @@ export class RemediationService {
     if (stableHash(proposal.acceptanceIds ?? []) !== stableHash(issue.acceptanceIds) || stableHash(proposal.decisionIds ?? []) !== stableHash(issue.decisionIds)) throw new Error("Remediation Proposal changed frozen Acceptance or Decisions");
     const dag = await this.runtime.store.readDag();
     const verifier = state.auditBlockerVerifierJob;
+    const verifierReview = plan.source === "audit" ? await this.blockerVerification(verifier) : undefined;
     const confirmedFindings: IssueAuditFinding[] = plan.source === "slice_gate"
-      ? [{ id: plan.confirmedFindingIds[0]!, severity: "blocker", message: state.sliceGates?.[plan.sourceSliceId!]?.error ?? "Slice Gate failed", evidence: state.sliceGates?.[plan.sourceSliceId!]?.verification?.flatMap((result) => [result.command, result.keyOutput ?? ""]).filter(Boolean) ?? [], violatedRule: `Slice ${plan.sourceSliceId} Gate must pass`, verification: state.sliceGates?.[plan.sourceSliceId!]?.commands.map((command) => command.command).join("; ") ?? "Rerun Slice Gate" }]
+      ? [{
+          id: plan.confirmedFindingIds[0]!,
+          severity: "blocker",
+          message: state.sliceGates?.[plan.sourceSliceId!]?.error ?? "Slice Gate failed",
+          evidence: state.sliceGates?.[plan.sourceSliceId!]?.verification?.flatMap((result) => [result.command, result.keyOutput ?? ""]).filter(Boolean) ?? [],
+          violatedRule: `Slice ${plan.sourceSliceId} Gate must pass`,
+          verification: state.sliceGates?.[plan.sourceSliceId!]?.commands.map((command) => command.command).join("; ") ?? "Rerun Slice Gate",
+          suggestedResolution: `Repair only the repository seams owned by Slice ${plan.sourceSliceId} and rerun its frozen Gate`,
+        }]
       : (() => {
-          if (!verifier?.result) throw new Error("Audit Remediation requires a completed Blocker Verification");
-          const confirmedIds = new Set(verifier.result.results.filter((result) => result.status === "confirmed").map((result) => result.findingId));
-          return verifier.findings.filter((finding) => confirmedIds.has(finding.findingId)).map((finding) => finding.finding);
+          const confirmedResults = new Map(verifierReview!.results.filter((result) => result.status === "confirmed").map((result) => [result.findingId, result]));
+          return verifier!.findings.filter((finding) => confirmedResults.has(finding.findingId)).map((finding) => ({
+            ...finding.finding,
+            evidence: [...new Set([...finding.finding.evidence, ...confirmedResults.get(finding.findingId)!.evidence])],
+          }));
         })();
     const manifest = await this.runtime.store.readManifest();
     const config = await loadForgeConfig(manifest.controlRoot);
-    const tasks = validateRemediationDrafts({ currentDag: dag, drafts: proposal.tasks, confirmedFindings, knownSliceIds: new Set(Object.keys(state.sliceGates ?? {})), modelProfiles: new Set(Object.keys(config.models.profiles)) });
+    const tasks = validateRemediationDrafts({ currentDag: dag, drafts: proposal.tasks, confirmedFindings, knownSliceIds: new Set(Object.keys(state.sliceGates ?? {})), modelProfiles: new Set(Object.keys(config.models.profiles)), requireEvidenceReadMatch: plan.source === "audit" });
     await this.runtime.store.transact("remediation_ready", (next) => {
       if (!next.remediationPlan || next.remediationPlan.findingHash !== plan.findingHash) throw new Error("Remediation Plan changed before apply");
       next.remediationPlan.status = "ready";
@@ -165,7 +204,6 @@ export class RemediationService {
     }
     const next = await this.runtime.applyRemediation(amendment);
     await preflight.markApplied(next.dagGeneration);
-    await atomicWriteJson(join(this.issueRoot, "tasks", `remediation-generation-${next.dagGeneration}.json`), { schemaVersion: 1, amendment, proposalHash: proposal.proposalHash, preflightResultHash: preflightState.job.result.resultHash });
     return next;
   }
 }

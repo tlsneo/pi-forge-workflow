@@ -1,13 +1,20 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { access, readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { dirname, join } from "node:path";
+import { buildIssueAuditSurface, issueAuditSurfaceReference, issueAuditSurfaceTaskIds, remediationInvalidatedAuditAxes, verifyIssueAuditSurface } from "./audit-surfaces.js";
 import { validateBlueprintEvidence } from "./blueprint.js";
 import { calculateFrontier, refreshReadyStates, validateDag } from "./dag.js";
+import { hasRepositoryEvidenceSeam, repositoryEvidenceSeams } from "./evidence.js";
 import { stableHash } from "./hash.js";
+import { classifySubagentFailure, isAmbiguousSpawnOutcome, recordSubagentFailure, subagentFailureEvent, type SubagentFailureRecord } from "../subagents/failures.js";
 import { appendJsonLine, atomicWriteJson, RuntimeStore } from "./store.js";
 import type {
   AuditBlockerVerifierBinding,
   AuditBlockerVerifierJob,
   AuditBlockerVerificationResult,
+  AuditBlockerVerifierReview,
   DagAmendment,
   HumanDecisionAnswer,
   HumanDecisionRequest,
@@ -16,6 +23,7 @@ import type {
   IssueAuditFinding,
   IssueAuditJob,
   IssueAuditReview,
+  IssueAuditSurface,
   IssueRuntimeState,
   ModelPolicy,
   RemediationPlannerBinding,
@@ -37,6 +45,122 @@ import type {
 } from "./types.js";
 
 const TERMINAL_AGENT_STATUSES = new Set(["completed", "failed", "stopped", "aborted"]);
+const execFileAsync = promisify(execFile);
+
+function validateFinalIssueReceipt(receipt: Record<string, unknown>, state: IssueRuntimeState, manifest: RuntimeManifest): void {
+  if (receipt.schemaVersion !== 1 || receipt.issueId !== state.issueId) throw new Error("Final Issue Receipt identity does not match the Runtime");
+  if (Object.values(state.tasks).some((task) => task.status !== "completed" || !task.receipt)) throw new Error("Issue has incomplete Tasks");
+  const gates = Object.values(state.sliceGates ?? {});
+  if (gates.length === 0 || gates.some((gate) => gate.status !== "passed")) throw new Error("Issue has incomplete Slice Gates");
+  if (manifest.assuranceProfile === "fast") {
+    if (receipt.assuranceProfile !== "fast" || receipt.completionMode !== "mechanical") throw new Error("Fast Assurance final Receipt is missing mechanical completion evidence");
+    const expectedTasks = Object.values(state.tasks).sort((left, right) => left.id.localeCompare(right.id)).map((task) => ({ taskId: task.id, commit: task.receipt!.commit, contractHash: task.receipt!.contractHash }));
+    const expectedGates = gates.sort((left, right) => left.id.localeCompare(right.id)).map((gate) => ({ sliceId: gate.id, verification: gate.verification ?? [] }));
+    if (stableHash(receipt.taskReceipts) !== stableHash(expectedTasks) || stableHash(receipt.sliceGates) !== stableHash(expectedGates)) {
+      throw new Error("Fast Assurance final Receipt does not match immutable Task Receipts and Slice Gate evidence");
+    }
+    return;
+  }
+  const axes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
+  const receiptAudits = receipt.audits as Partial<Record<IssueAuditAxis, IssueAuditReview>> | undefined;
+  if (!receiptAudits || axes.some((axis) => receiptAudits[axis]?.verdict !== "passed" || state.audits?.[axis]?.verdict !== "passed")) {
+    throw new Error("Standard/High Assurance final Receipt requires three passed Audit axes");
+  }
+  if (stableHash(receiptAudits) !== stableHash(state.audits)) throw new Error("Final Issue Receipt Audit evidence does not match the Runtime");
+}
+
+async function requireImmutableAuditArtifacts(store: RuntimeStore, state: IssueRuntimeState, manifest: RuntimeManifest): Promise<void> {
+  if (manifest.assuranceProfile === "fast" || !manifest.acceptanceEvidenceRequired) return;
+  const axes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
+  for (const axis of axes) {
+    const review = state.audits?.[axis];
+    if (!review) throw new Error(`Missing ${axis} Audit review`);
+    const generation = review.carriedFrom?.auditGeneration ?? state.auditGeneration ?? 1;
+    const bindingId = review.carriedFrom?.bindingId ?? review.bindingId;
+    const artifact = await store.readAudit<IssueAuditReview>(`generation-${generation}-${axis}-${bindingId}`);
+    const expected = { axis: review.axis, verdict: review.verdict, bindingId, surfaceHash: review.carriedFrom?.surfaceHash ?? review.surfaceHash ?? null, findings: review.findings };
+    const actual = artifact ? { axis: artifact.axis, verdict: artifact.verdict, bindingId: artifact.bindingId, surfaceHash: artifact.surfaceHash ?? null, findings: artifact.findings } : undefined;
+    if (!actual || stableHash(actual) !== stableHash(expected)) throw new Error(`${axis} immutable Audit artifact does not match final Runtime evidence`);
+  }
+}
+
+async function requireTaskReceiptCommitsAtHead(workspaceRoot: string, state: IssueRuntimeState): Promise<void> {
+  const head = (await execFileAsync("git", ["-C", workspaceRoot, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
+  for (const task of Object.values(state.tasks)) {
+    const commit = task.receipt?.commit;
+    if (!commit) throw new Error(`${task.id} has no immutable Receipt commit`);
+    try {
+      await execFileAsync("git", ["-C", workspaceRoot, "merge-base", "--is-ancestor", commit, head], { encoding: "utf8" });
+    } catch {
+      throw new Error(`${task.id} Receipt commit ${commit} is not an ancestor of completion HEAD ${head}`);
+    }
+  }
+}
+
+async function requireCleanCompletionWorkspace(workspaceRoot: string): Promise<void> {
+  try {
+    const result = await execFileAsync("git", ["-C", workspaceRoot, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
+    if (result.stdout.trim()) throw new Error(`Issue completion requires a clean Git workspace; found:\n${result.stdout.trim()}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Issue completion requires")) throw error;
+    throw new Error(`Issue completion could not verify the frozen Git workspace: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function auditBlockerResultHash(result: AuditBlockerVerifierReview | { bindingId: string; findingHash: string; resultHash: string }): string {
+  return result.resultHash ?? stableHash({ bindingId: result.bindingId, findingHash: result.findingHash, results: "results" in result ? result.results : [] });
+}
+
+async function loadIssueAcceptanceEvidence(runtimeRoot: string, manifest: RuntimeManifest): Promise<{
+  acceptance: Array<{ id: string; statement: string; verification: string[] }>;
+  behavior?: { happyPath: string[]; errorPaths: string[]; edgeCases: string[] };
+}> {
+  try {
+    const issueRoot = dirname(runtimeRoot);
+    const workItemRoot = dirname(dirname(issueRoot));
+    const issue = JSON.parse(await readFile(join(issueRoot, "issue.json"), "utf8")) as {
+      artifactHash?: string;
+      acceptanceIds?: string[];
+      behavior?: { happyPath: string[]; errorPaths: string[]; edgeCases: string[] };
+      source?: { prdGeneration?: number; prdHash?: string };
+    };
+    const { artifactHash, ...issueBase } = issue;
+    if (!artifactHash || stableHash(issueBase) !== artifactHash || artifactHash !== manifest.issueHash) throw new Error("Issue artifact content hash does not match the Runtime manifest");
+    const generation = issue.source?.prdGeneration;
+    if (!generation || !issue.source?.prdHash) throw new Error("Issue artifact is missing its frozen PRD identity");
+    const prdGeneration = JSON.parse(await readFile(join(workItemRoot, "prd", "generations", `prd-${generation}.json`), "utf8")) as {
+      contentHash?: string;
+      prd?: { acceptance?: Array<{ id: string; statement: string; verification: string[] }> };
+    };
+    if (!prdGeneration.prd || stableHash(prdGeneration.prd) !== prdGeneration.contentHash || prdGeneration.contentHash !== issue.source.prdHash) throw new Error("Frozen PRD artifact content hash does not match the Issue source");
+    const requestedIds = issue.acceptanceIds ?? [];
+    const byId = new Map((prdGeneration.prd?.acceptance ?? []).map((item) => [item.id, item]));
+    const missing = requestedIds.filter((id) => !byId.has(id));
+    if (requestedIds.length === 0 || missing.length > 0) throw new Error(`Frozen Issue Acceptance evidence is incomplete: ${missing.join(", ") || "no Acceptance IDs"}`);
+    if (!issue.behavior) throw new Error("Frozen Issue behavior evidence is missing");
+    return {
+      acceptance: requestedIds.map((id) => structuredClone(byId.get(id)!)),
+      ...(issue.behavior ? { behavior: structuredClone(issue.behavior) } : {}),
+    };
+  } catch (error) {
+    if (!manifest.acceptanceEvidenceRequired) return { acceptance: [] };
+    throw new Error(`Final Audit cannot construct exact frozen Acceptance evidence: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function recordTaskAgentFailure(task: TaskState, failure: SubagentFailureRecord) {
+  task.lastFailure = failure;
+  if (failure.classification === "infrastructure") {
+    task.infrastructureAttempts = (task.infrastructureAttempts ?? 0) + 1;
+    const generation = String(task.binding?.modelPolicyGeneration ?? 1);
+    (task.infrastructureAttemptsByModelPolicy ??= {})[generation] = (task.infrastructureAttemptsByModelPolicy[generation] ?? 0) + 1;
+    return { retry: !isAmbiguousSpawnOutcome(failure) && task.infrastructureAttempts <= (task.maxInfrastructureAttempts ?? 2), infrastructure: true };
+  }
+  const generation = String(task.binding?.modelPolicyGeneration ?? 1);
+  const total = task.attemptsByModelPolicy?.[generation] ?? task.attempt;
+  const infrastructure = task.infrastructureAttemptsByModelPolicy?.[generation] ?? 0;
+  return { retry: Math.max(0, total - infrastructure) < 2, infrastructure: false };
+}
 
 function requireTask(state: IssueRuntimeState, taskId: string) {
   const task = state.tasks[taskId];
@@ -70,13 +194,14 @@ function receiptMatchesTask(receipt: TaskReceipt, task: TaskState, contract: Tas
 function issueStatusAfterReceiptReconciliation(state: IssueRuntimeState): IssueRuntimeState["issueStatus"] {
   if (state.humanDecision?.status === "open" || state.remediationPlan?.status === "needs_user") return "needs_user";
   const tasks = Object.values(state.tasks);
+  if (tasks.some((task) => task.status === "infrastructure_failed")) return "infrastructure_failed";
   if (tasks.some((task) => task.status === "failed" || task.status === "cancelled")) return "failed";
   if (tasks.some((task) => task.status === "blocked" || task.status === "needs_user")) return "blocked";
   if (tasks.some((task) => task.status !== "completed")) return "executing";
   const gates = Object.values(state.sliceGates ?? {});
   if (gates.some((gate) => gate.status === "failed")) return "blocked";
   if (gates.some((gate) => gate.status !== "passed") || gates.length === 0) return "integrating";
-  if (Object.values(state.audits ?? {}).some((audit) => audit?.verdict === "blocked")) return "blocked";
+  if (!state.auditInvalidatedAxes && Object.values(state.audits ?? {}).some((audit) => audit?.verdict === "blocked")) return "blocked";
   return state.issueStatus === "completed" ? "completed" : "auditing";
 }
 
@@ -217,7 +342,7 @@ export class RuntimeService {
   async bindAgent(taskId: string, bindingId: string, agentId: string): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
     const currentTask = requireTask(current, taskId);
-    if (currentTask.receipt || currentTask.status === "completed" || currentTask.gitStatus === "receipted") return current;
+    if (currentTask.receipt || ["completed", "infrastructure_failed"].includes(currentTask.status) || currentTask.gitStatus === "receipted") return current;
     return this.store.transact("agent_bound", (state) => {
       const task = requireTask(state, taskId);
       if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") return;
@@ -231,11 +356,11 @@ export class RuntimeService {
     const current = await this.store.readState();
     const currentTask = Object.values(current.tasks).find((candidate) => candidate.binding?.agentId === agentId);
     if (!currentTask) throw new Error(`Unknown agent binding: ${agentId}`);
-    if (currentTask.receipt || currentTask.status === "completed" || currentTask.gitStatus === "receipted") return current;
+    if (currentTask.receipt || ["completed", "infrastructure_failed"].includes(currentTask.status) || currentTask.gitStatus === "receipted") return current;
     return this.store.transact("agent_started", (state) => {
       const task = Object.values(state.tasks).find((candidate) => candidate.binding?.agentId === agentId);
       if (!task) throw new Error(`Unknown agent binding: ${agentId}`);
-      if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") return;
+      if (task.receipt || ["completed", "infrastructure_failed"].includes(task.status) || task.gitStatus === "receipted") return;
       task.agentStatus = "running";
       task.status = task.handoffStatus === "valid" ? "awaiting_verification" : "running";
     }, { details: { agentId } });
@@ -303,21 +428,26 @@ export class RuntimeService {
   }
 
   async markSpawnFailed(taskId: string, error: string): Promise<IssueRuntimeState> {
-    return this.store.transact("agent_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.store.transact(subagentFailureEvent(failure, "agent_spawn_failed"), (state) => {
       const task = requireTask(state, taskId);
       if (task.status !== "starting") throw new Error(`${taskId} is not starting`);
-      task.status = "retry_ready";
+      const decision = recordTaskAgentFailure(task, failure);
+      task.status = decision.retry ? "retry_ready" : decision.infrastructure ? "infrastructure_failed" : "failed";
       task.agentStatus = "failed";
       task.verificationError = error;
-    }, { taskId, details: { error } });
+      if (!decision.retry) state.issueStatus = decision.infrastructure ? "infrastructure_failed" : "failed";
+    }, { taskId, details: { error, failure } });
   }
 
   async markAgentTerminal(agentId: string, status: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
     const currentTask = Object.values(current.tasks).find((candidate) => candidate.binding?.agentId === agentId);
     if (!currentTask) throw new Error(`Unknown agent binding: ${agentId}`);
-    if (currentTask.receipt || currentTask.status === "completed" || currentTask.gitStatus === "receipted") return current;
-    return this.store.transact("agent_terminal", (state) => {
+    if (currentTask.receipt || ["completed", "infrastructure_failed"].includes(currentTask.status) || currentTask.gitStatus === "receipted") return current;
+    const message = error ?? (status === "completed" ? "Agent completed without a valid handoff" : `Agent terminated as ${status} without a valid handoff`);
+    const failure = currentTask.handoffStatus === "valid" ? undefined : classifySubagentFailure(message, "lifecycle");
+    return this.store.transact(failure?.classification === "infrastructure" ? "infrastructure_retry_scheduled" : "agent_terminal", (state) => {
       const task = Object.values(state.tasks).find((candidate) => candidate.binding?.agentId === agentId);
       if (!task) throw new Error(`Unknown agent binding: ${agentId}`);
       if (task.receipt || task.status === "completed" || task.gitStatus === "receipted") return;
@@ -325,10 +455,12 @@ export class RuntimeService {
       if (task.handoffStatus === "valid") {
         task.status = "awaiting_verification";
       } else {
-        task.status = status === "completed" ? "interrupted" : "retry_ready";
-        task.verificationError = error ?? "Agent stopped without a valid handoff";
+        const decision = recordTaskAgentFailure(task, failure!);
+        task.status = decision.retry ? (status === "completed" && !decision.infrastructure ? "interrupted" : "retry_ready") : decision.infrastructure ? "infrastructure_failed" : "failed";
+        task.verificationError = message;
+        if (!decision.retry) state.issueStatus = decision.infrastructure ? "infrastructure_failed" : "failed";
       }
-    }, { details: { agentId, status, ...(error ? { error } : {}) } });
+    }, { details: { agentId, status, ...(error ? { error } : {}), ...(failure ? { failure } : {}) } });
   }
 
   async beginVerification(taskId: string): Promise<IssueRuntimeState> {
@@ -426,6 +558,7 @@ export class RuntimeService {
       const task = requireTask(state, taskId);
       const job = task.conformanceJob;
       if (!job?.binding || job.binding.id !== bindingId) throw new Error(`${taskId} Task Conformance Binding mismatch`);
+      if (job.status === "infrastructure_failed") return;
       if (job.binding.agentId && job.binding.agentId !== agentId) throw new Error(`${taskId} Task Conformance is already bound to another Agent`);
       job.binding.agentId = agentId;
     }, { taskId, details: { bindingId, agentId } });
@@ -435,7 +568,7 @@ export class RuntimeService {
     return this.store.transact("task_conformance_agent_started", (state) => {
       const task = Object.values(state.tasks).find((candidate) => candidate.conformanceJob?.binding?.agentId === agentId);
       if (!task?.conformanceJob) throw new Error(`Unknown Task Conformance Agent: ${agentId}`);
-      if (task.conformanceJob.result) return;
+      if (task.conformanceJob.status === "infrastructure_failed" || task.conformanceJob.result) return;
       task.conformanceJob.status = "running";
       task.status = "reviewing";
     }, { details: { agentId } });
@@ -510,37 +643,42 @@ export class RuntimeService {
   }
 
   async markTaskConformanceAgentTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<IssueRuntimeState> {
-    return this.store.transact("task_conformance_agent_terminal", (state) => {
+    const message = error ?? `Task Conformance Agent ${terminal} without a Result`;
+    const failure = classifySubagentFailure(message, "lifecycle");
+    return this.store.transact(subagentFailureEvent(failure, "task_conformance_agent_terminal"), (state) => {
       const task = Object.values(state.tasks).find((candidate) => candidate.conformanceJob?.binding?.agentId === agentId);
       if (!task?.conformanceJob) throw new Error(`Unknown Task Conformance Agent: ${agentId}`);
       const job = task.conformanceJob;
-      if (job.result) return;
-      job.error = error ?? `Task Conformance Agent ${terminal} without a Result`;
-      if (job.attempt >= job.maxAttempts) {
-        job.status = "failed";
-        task.status = "blocked";
+      if (job.status === "infrastructure_failed" || job.result) return;
+      job.error = message;
+      const decision = recordSubagentFailure(job, failure);
+      if (!decision.retry) {
+        job.status = failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+        task.status = failure.classification === "infrastructure" ? "infrastructure_failed" : "blocked";
         task.blocker = job.error;
-        state.issueStatus = "blocked";
+        state.issueStatus = failure.classification === "infrastructure" ? "infrastructure_failed" : "blocked";
       } else {
-        job.status = terminal === "completed" ? "interrupted" : "retry_ready";
+        job.status = terminal === "completed" && failure.classification === "semantic" ? "interrupted" : "retry_ready";
         task.status = "awaiting_review";
       }
-    }, { details: { agentId, terminal, ...(error ? { error } : {}) } });
+    }, { details: { agentId, terminal, failure } });
   }
 
   async markTaskConformanceSpawnFailed(taskId: string, error: string): Promise<IssueRuntimeState> {
-    return this.store.transact("task_conformance_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.store.transact(subagentFailureEvent(failure, "task_conformance_spawn_failed"), (state) => {
       const task = requireTask(state, taskId);
       const job = task.conformanceJob;
       if (!job || job.status !== "starting") throw new Error(`${taskId} Task Conformance is not starting`);
       job.error = error;
-      job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
-      task.status = job.status === "failed" ? "blocked" : "awaiting_review";
-      if (job.status === "failed") {
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry ? "retry_ready" : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+      task.status = decision.retry ? "awaiting_review" : failure.classification === "infrastructure" ? "infrastructure_failed" : "blocked";
+      if (!decision.retry) {
         task.blocker = error;
-        state.issueStatus = "blocked";
+        state.issueStatus = failure.classification === "infrastructure" ? "infrastructure_failed" : "blocked";
       }
-    }, { taskId, details: { error } });
+    }, { taskId, details: { error, failure } });
   }
 
   async completeTask(taskId: string, commit: string): Promise<IssueRuntimeState> {
@@ -680,6 +818,14 @@ export class RuntimeService {
     verification: Array<{ command: string; exitCode: number; keyOutput?: string }>,
     error?: string,
   ): Promise<IssueRuntimeState> {
+    const current = await this.store.readState();
+    const currentGate = current.sliceGates?.[sliceId];
+    if (!currentGate || currentGate.status !== "running") throw new Error(`${sliceId} gate is not running`);
+    if (verification.length !== currentGate.commands.length || verification.some((result, index) => result.command !== currentGate.commands[index]?.command)) {
+      throw new Error(`${sliceId} Gate verification must exactly match its frozen commands`);
+    }
+    const mechanicallyPassed = verification.every((result) => result.exitCode === 0);
+    if (passed !== mechanicallyPassed) throw new Error(`${sliceId} Gate verdict contradicts command exit codes`);
     return this.store.transact(passed ? "slice_gate_passed" : "slice_gate_failed", (state) => {
       const gate = state.sliceGates?.[sliceId];
       if (!gate || gate.status !== "running") throw new Error(`${sliceId} gate is not running`);
@@ -714,23 +860,72 @@ export class RuntimeService {
     const current = await this.store.readState();
     if (current.auditJobs && Object.values(current.auditJobs).some((job) => ["pending", "starting", "running", "retry_ready", "interrupted"].includes(job.status))) return current;
     if (current.issueStatus !== "auditing") throw new Error(`Issue Audit cannot start from ${current.issueStatus}`);
+    const dag = await this.store.readDag();
     const axes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
-    const jobs = Object.fromEntries(axes.map((axis) => [axis, {
-      id: `issue-audit-${(current.auditGeneration ?? 0) + 1}-${axis}`,
-      axis,
-      status: "pending" as const,
-      attempt: 0,
-      maxAttempts: 2,
-      ...input[axis],
-    }])) as Record<IssueAuditAxis, IssueAuditJob>;
     const auditGeneration = (current.auditGeneration ?? 0) + 1;
-    await this.store.writeAudit(`issue-audit-plan-${auditGeneration}`, { schemaVersion: 1, issueId: current.issueId, auditGeneration, jobs });
+    const invalidated = new Set(current.auditInvalidatedAxes ?? axes);
+    if (current.auditInvalidatedAxes && !manifest.taskConformanceRequired) invalidated.add("standards");
+    const acceptanceEvidence = await loadIssueAcceptanceEvidence(this.store.root, manifest);
+    const jobs = {} as Record<IssueAuditAxis, IssueAuditJob>;
+    const carriedAudits: Partial<Record<IssueAuditAxis, IssueAuditReview>> = {};
+
+    for (const axis of axes) {
+      const surface = buildIssueAuditSurface({
+        manifest,
+        dag,
+        state: current,
+        axis,
+        auditGeneration,
+        taskIds: issueAuditSurfaceTaskIds(current, axis),
+        acceptanceEvidence: acceptanceEvidence.acceptance,
+        ...(acceptanceEvidence.behavior ? { behaviorEvidence: acceptanceEvidence.behavior } : {}),
+      });
+      await this.store.writeImmutableArtifact(surface.artifactPath, surface);
+      const surfaceReference = issueAuditSurfaceReference(surface);
+      const previous = current.audits?.[axis];
+      const previousSurface = current.auditJobs?.[axis]?.surface;
+      const canCarry = !invalidated.has(axis)
+        && previous?.verdict === "passed"
+        && previousSurface?.surfaceHash === surface.surfaceHash;
+      if (canCarry) {
+        const carriedFrom = previous.carriedFrom ?? {
+          auditGeneration: current.auditGeneration ?? 1,
+          bindingId: previous.bindingId,
+          surfaceHash: surface.surfaceHash,
+        };
+        const review: IssueAuditReview = { ...structuredClone(previous), surfaceHash: surface.surfaceHash, carriedFrom };
+        carriedAudits[axis] = review;
+        jobs[axis] = {
+          id: `issue-audit-${auditGeneration}-${axis}`,
+          axis,
+          status: "completed",
+          attempt: 0,
+          maxAttempts: 2,
+          surface: surfaceReference,
+          carriedFrom,
+          ...input[axis],
+        };
+
+      } else {
+        jobs[axis] = {
+          id: `issue-audit-${auditGeneration}-${axis}`,
+          axis,
+          status: "pending",
+          attempt: 0,
+          maxAttempts: 2,
+          surface: surfaceReference,
+          ...input[axis],
+        };
+      }
+    }
+
     return this.store.transact("issue_audit_jobs_created", (state) => {
       state.auditGeneration = auditGeneration;
       state.auditJobs = jobs;
-      state.audits = {};
+      state.audits = carriedAudits;
+      delete state.auditInvalidatedAxes;
       delete state.auditBlockerVerifierJob;
-    }, { details: { axes, auditGeneration } });
+    }, { details: { axes, auditGeneration, invalidatedAxes: [...invalidated], carriedAxes: Object.keys(carriedAudits) } });
   }
 
   async claimAuditJob(axis: IssueAuditAxis, binding: IssueAuditBinding): Promise<IssueRuntimeState> {
@@ -738,8 +933,7 @@ export class RuntimeService {
     const job = current.auditJobs?.[axis];
     if (!job || job.axis !== axis) throw new Error(`Unknown Issue Audit Job: ${axis}`);
     if (!["pending", "retry_ready", "interrupted"].includes(job.status)) throw new Error(`${job.id} cannot be claimed from ${job.status}`);
-    if (job.attempt >= job.maxAttempts) throw new Error(`${job.id} exhausted its retry budget`);
-    if (binding.axis !== axis || binding.attempt !== job.attempt + 1) throw new Error(`Binding does not match ${job.id}`);
+    if (binding.axis !== axis || binding.attempt !== job.attempt + 1 || (job.surface && binding.surfaceHash !== job.surface.surfaceHash)) throw new Error(`Binding does not match ${job.id}`);
     await this.store.writeBinding(binding.id, binding);
     return this.store.transact("issue_audit_claimed", (state) => {
       const mutable = state.auditJobs?.[axis];
@@ -755,6 +949,7 @@ export class RuntimeService {
     return this.store.transact("issue_audit_agent_bound", (state) => {
       const job = state.auditJobs?.[axis];
       if (!job?.binding || job.binding.id !== bindingId) throw new Error(`Issue Audit Binding mismatch: ${bindingId}`);
+      if (job.status === "infrastructure_failed") return;
       if (job.binding.agentId && job.binding.agentId !== agentId) throw new Error(`${job.id} is already bound to another Agent`);
       job.binding.agentId = agentId;
     }, { details: { axis, bindingId, agentId } });
@@ -764,57 +959,108 @@ export class RuntimeService {
     return this.store.transact("issue_audit_agent_started", (state) => {
       const job = Object.values(state.auditJobs ?? {}).find((candidate) => candidate.binding?.agentId === agentId);
       if (!job) throw new Error(`Unknown Issue Auditor Agent: ${agentId}`);
+      if (job.status === "infrastructure_failed") return;
       if (!job.result) job.status = "running";
     }, { details: { agentId } });
   }
 
   async markAuditAgentTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<IssueRuntimeState> {
-    return this.store.transact("issue_audit_agent_terminal", (state) => {
+    const message = error ?? (terminal === "completed" ? "Auditor stopped without a structured result" : `Auditor terminated as ${terminal}`);
+    const failure = classifySubagentFailure(message, "lifecycle");
+    return this.store.transact(subagentFailureEvent(failure, "issue_audit_agent_terminal"), (state) => {
       const job = Object.values(state.auditJobs ?? {}).find((candidate) => candidate.binding?.agentId === agentId);
       if (!job) throw new Error(`Unknown Issue Auditor Agent: ${agentId}`);
-      if (job.result) job.status = "completed";
-      else if (terminal === "completed") {
-        job.status = "interrupted";
-        job.error = error ?? "Auditor stopped without a structured result";
-      } else {
-        job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
-        job.error = error ?? `Auditor terminated as ${terminal}`;
-        if (job.status === "failed") state.issueStatus = "blocked";
+      if (job.status === "infrastructure_failed") return;
+      if (job.result) {
+        job.status = "completed";
+        return;
       }
-    }, { details: { agentId, terminal, ...(error ? { error } : {}) } });
+      job.error = message;
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry
+        ? terminal === "completed" && failure.classification === "semantic" ? "interrupted" : "retry_ready"
+        : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+      if (!decision.retry) state.issueStatus = failure.classification === "infrastructure" ? "infrastructure_failed" : "blocked";
+    }, { details: { agentId, terminal, failure } });
   }
 
   async markAuditSpawnFailed(axis: IssueAuditAxis, error: string): Promise<IssueRuntimeState> {
-    return this.store.transact("issue_audit_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.store.transact(subagentFailureEvent(failure, "issue_audit_spawn_failed"), (state) => {
       const job = state.auditJobs?.[axis];
       if (!job || job.status !== "starting") throw new Error(`${axis} Audit is not starting`);
-      job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry ? "retry_ready" : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
       job.error = error;
-      if (job.status === "failed") state.issueStatus = "blocked";
-    }, { details: { axis, error } });
+      if (!decision.retry) state.issueStatus = failure.classification === "infrastructure" ? "infrastructure_failed" : "blocked";
+    }, { details: { axis, error, failure } });
   }
 
-  async submitAudit(bindingId: string, axis: IssueAuditAxis, verdict: IssueAuditReview["verdict"], findings: IssueAuditFinding[]): Promise<IssueRuntimeState> {
+  async submitAudit(bindingId: string, axis: IssueAuditAxis, verdict: IssueAuditReview["verdict"], findings: IssueAuditFinding[], surfaceHash?: string): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
     const job = current.auditJobs?.[axis];
     if (!job?.binding || job.binding.id !== bindingId) throw new Error(`Unknown Issue Audit Binding: ${bindingId}`);
-    if (job.result || ["result_submitted", "completed"].includes(job.status)) throw new Error(`${bindingId} already submitted an Audit`);
+    const runtimeManifest = await this.store.readManifest();
+    if (job.surface) {
+      const artifact = await this.store.readImmutableArtifact<IssueAuditSurface>(job.surface.artifactPath);
+      if (!artifact || !verifyIssueAuditSurface(artifact) || stableHash(issueAuditSurfaceReference(artifact)) !== stableHash(job.surface)) {
+        throw new Error(`${bindingId} Issue Audit Surface artifact is missing or does not match its Runtime reference`);
+      }
+      if (surfaceHash !== job.surface.surfaceHash || job.binding.surfaceHash !== job.surface.surfaceHash) throw new Error(`${bindingId} submitted a stale Issue Audit Surface Hash`);
+    }
+    const submissionHash = stableHash({ axis, verdict, surfaceHash: job.surface?.surfaceHash ?? null, findings });
+    if (job.result || ["result_submitted", "completed"].includes(job.status)) {
+      const resultHash = stableHash({ axis: job.result?.axis, verdict: job.result?.verdict, surfaceHash: job.result?.surfaceHash ?? null, findings: job.result?.findings });
+      if (job.result && resultHash === submissionHash) {
+        const axes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
+        if (axes.every((candidate) => current.audits?.[candidate]?.verdict === "passed")) {
+          return this.markIssueCompleted({ schemaVersion: 1, issueId: current.issueId, audits: current.audits, completedAt: new Date().toISOString() });
+        }
+        return current;
+      }
+      throw new Error(`${bindingId} already submitted a different Audit result`);
+    }
     if (!["starting", "running"].includes(job.status)) throw new Error(`${bindingId} cannot submit from ${job.status}`);
     const ids = new Set<string>();
+    const findingPrefix: Record<IssueAuditAxis, string> = { standards: "STD-", acceptance_integration: "ACC-", architecture_minimality: "ARCH-" };
+    const existingFindingIds = new Set(Object.entries(current.audits ?? {})
+      .filter(([existingAxis]) => existingAxis !== axis)
+      .flatMap(([, audit]) => audit?.findings.map((finding) => finding.id) ?? []));
     for (const finding of findings) {
-      if (!finding.id.trim() || ids.has(finding.id)) throw new Error(`Invalid or duplicate Issue Audit Finding ID: ${finding.id}`);
+      if (!finding.id.startsWith(findingPrefix[axis]) || ids.has(finding.id) || existingFindingIds.has(finding.id)) throw new Error(`Invalid, wrongly prefixed, or duplicate cross-Axis Issue Audit Finding ID: ${finding.id}`);
       ids.add(finding.id);
       if (!finding.message.trim() || !finding.violatedRule.trim() || !finding.verification.trim()) throw new Error(`${finding.id} is incomplete`);
-      if (finding.severity === "blocker" && finding.evidence.length === 0) throw new Error(`${finding.id} Blocker has no evidence`);
+      if (finding.severity === "blocker" && !finding.suggestedResolution?.trim()) throw new Error(`${finding.id} Blocker requires the smallest sufficient suggestedResolution`);
+      if (finding.severity === "blocker" && !hasRepositoryEvidenceSeam(finding.evidence)) throw new Error(`${finding.id} Blocker requires at least one repository path, path#line citation, or path#symbol evidence seam`);
+      if (finding.severity === "blocker") {
+        const paths = [...new Set(repositoryEvidenceSeams(finding.evidence).map((seam) => seam.split("#")[0]!))];
+        let existingPath = false;
+        for (const path of paths) {
+          try { await access(join(runtimeManifest.workspaceRoot, path)); existingPath = true; break; } catch { /* keep checking exact cited paths */ }
+        }
+        if (!existingPath) throw new Error(`${finding.id} Blocker evidence does not cite an existing repository path`);
+      }
     }
     const hasBlocker = findings.some((finding) => finding.severity === "blocker");
     if (verdict === "passed" && hasBlocker) throw new Error(`${axis} Audit cannot pass with a Blocker`);
     if (verdict === "blocked" && !hasBlocker) throw new Error(`${axis} Audit cannot block without a Blocker`);
-    const review: IssueAuditReview = { axis, verdict, bindingId, findings, submittedAt: new Date().toISOString() };
-    await this.store.writeAudit(`generation-${current.auditGeneration ?? 1}-${axis}-${bindingId}`, review);
+    const auditId = `generation-${current.auditGeneration ?? 1}-${axis}-${bindingId}`;
+    const existingReview = await this.store.readAudit<IssueAuditReview>(auditId);
+    if (existingReview) {
+      const existingHash = stableHash({ axis: existingReview.axis, verdict: existingReview.verdict, surfaceHash: existingReview.surfaceHash ?? null, findings: existingReview.findings });
+      if (existingHash !== submissionHash) throw new Error(`${bindingId} immutable Audit artifact contains a different result`);
+    }
+    const review: IssueAuditReview = existingReview ?? { axis, verdict, bindingId, ...(job.surface ? { surfaceHash: job.surface.surfaceHash } : {}), findings, submittedAt: new Date().toISOString() };
+    await this.store.writeAudit(auditId, review);
     const next = await this.store.transact("issue_audit_submitted", (state) => {
       const mutable = state.auditJobs?.[axis];
       if (!mutable?.binding || mutable.binding.id !== bindingId) throw new Error(`Issue Audit Binding changed: ${bindingId}`);
+      if (mutable.result) {
+        const mutableHash = stableHash({ axis: mutable.result.axis, verdict: mutable.result.verdict, surfaceHash: mutable.result.surfaceHash ?? null, findings: mutable.result.findings });
+        if (mutableHash === submissionHash) return;
+        throw new Error(`${bindingId} concurrently submitted a different Audit result`);
+      }
+      if (!["starting", "running"].includes(mutable.status)) throw new Error(`${bindingId} changed to terminal Audit status before submission`);
       mutable.result = review;
       mutable.status = "result_submitted";
       (state.audits ??= {})[axis] = review;
@@ -830,6 +1076,8 @@ export class RuntimeService {
   async createAuditBlockerVerifierJob(input: { model: string; thinking: AuditBlockerVerifierJob["thinking"]; maxTurns: number; configHash: string }): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
     if (current.issueStatus !== "blocked") throw new Error(`Audit Blocker Verification cannot start from ${current.issueStatus}`);
+    const axes: IssueAuditAxis[] = ["standards", "acceptance_integration", "architecture_minimality"];
+    if (axes.some((axis) => !current.audits?.[axis])) throw new Error("Audit Blocker Verification waits for all three Axis results");
     const findings = Object.entries(current.audits ?? {}).flatMap(([axis, audit]) =>
       (audit?.findings ?? []).filter((finding) => finding.severity === "blocker").map((finding) => ({
         findingId: finding.id,
@@ -850,7 +1098,6 @@ export class RuntimeService {
       findings,
       ...input,
     };
-    await this.store.writeAudit(`blocker-verifier-plan-${current.auditGeneration ?? 1}`, { schemaVersion: 1, auditGeneration: current.auditGeneration ?? 1, job });
     return this.store.transact("issue_audit_blocker_verifier_created", (state) => {
       state.auditBlockerVerifierJob = job;
     }, { details: { findingHash, findings: findings.map((finding) => finding.findingId) } });
@@ -860,7 +1107,7 @@ export class RuntimeService {
     const current = await this.store.readState();
     const job = current.auditBlockerVerifierJob;
     if (!job || !["pending", "retry_ready", "interrupted"].includes(job.status)) throw new Error("Audit Blocker Verifier is not claimable");
-    if (job.attempt >= job.maxAttempts || binding.attempt !== job.attempt + 1 || binding.findingHash !== job.findingHash) throw new Error("Audit Blocker Verifier Binding is invalid");
+    if (binding.attempt !== job.attempt + 1 || binding.findingHash !== job.findingHash) throw new Error("Audit Blocker Verifier Binding is invalid");
     await this.store.writeBinding(binding.id, binding);
     return this.store.transact("issue_audit_blocker_verifier_claimed", (state) => {
       const mutable = state.auditBlockerVerifierJob!;
@@ -875,6 +1122,7 @@ export class RuntimeService {
     return this.store.transact("issue_audit_blocker_verifier_bound", (state) => {
       const job = state.auditBlockerVerifierJob;
       if (!job?.binding || job.binding.id !== bindingId) throw new Error("Audit Blocker Verifier Binding mismatch");
+      if (job.status === "infrastructure_failed") return;
       if (job.binding.agentId && job.binding.agentId !== agentId) throw new Error("Audit Blocker Verifier already has another Agent");
       job.binding.agentId = agentId;
     }, { details: { bindingId, agentId } });
@@ -884,49 +1132,76 @@ export class RuntimeService {
     return this.store.transact("issue_audit_blocker_verifier_started", (state) => {
       const job = state.auditBlockerVerifierJob;
       if (job?.binding?.agentId !== agentId) throw new Error("Unknown Audit Blocker Verifier Agent");
+      if (job.status === "infrastructure_failed") return;
       if (!job.result) job.status = "running";
     }, { details: { agentId } });
   }
 
   async markAuditBlockerVerifierTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<IssueRuntimeState> {
-    return this.store.transact("issue_audit_blocker_verifier_terminal", (state) => {
+    const message = error ?? `Verifier terminated as ${terminal} without a structured result`;
+    const failure = classifySubagentFailure(message, "lifecycle");
+    return this.store.transact(subagentFailureEvent(failure, "issue_audit_blocker_verifier_terminal"), (state) => {
       const job = state.auditBlockerVerifierJob;
       if (job?.binding?.agentId !== agentId) throw new Error("Unknown Audit Blocker Verifier Agent");
-      if (job.result) job.status = "completed";
-      else {
-        job.status = job.attempt >= job.maxAttempts ? "failed" : terminal === "completed" ? "interrupted" : "retry_ready";
-        job.error = error ?? `Verifier terminated as ${terminal} without a structured result`;
+      if (job.status === "infrastructure_failed") return;
+      if (job.result) {
+        job.status = "completed";
+        return;
       }
-    }, { details: { agentId, terminal, ...(error ? { error } : {}) } });
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry
+        ? terminal === "completed" && failure.classification === "semantic" ? "interrupted" : "retry_ready"
+        : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+      job.error = message;
+      if (!decision.retry && failure.classification === "infrastructure") state.issueStatus = "infrastructure_failed";
+    }, { details: { agentId, terminal, failure } });
   }
 
   async markAuditBlockerVerifierSpawnFailed(error: string): Promise<IssueRuntimeState> {
-    return this.store.transact("issue_audit_blocker_verifier_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.store.transact(subagentFailureEvent(failure, "issue_audit_blocker_verifier_spawn_failed"), (state) => {
       const job = state.auditBlockerVerifierJob;
       if (!job || job.status !== "starting") throw new Error("Audit Blocker Verifier is not starting");
-      job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry ? "retry_ready" : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
       job.error = error;
-    }, { details: { error } });
+      if (!decision.retry && failure.classification === "infrastructure") state.issueStatus = "infrastructure_failed";
+    }, { details: { error, failure } });
   }
 
   async submitAuditBlockerVerification(bindingId: string, results: AuditBlockerVerificationResult[]): Promise<IssueRuntimeState> {
     const current = await this.store.readState();
     const job = current.auditBlockerVerifierJob;
-    if (!job?.binding || job.binding.id !== bindingId || !["starting", "running"].includes(job.status)) throw new Error("Unknown or inactive Audit Blocker Verifier Binding");
+    if (!job?.binding || job.binding.id !== bindingId) throw new Error("Unknown Audit Blocker Verifier Binding");
+    const submissionHash = stableHash({ bindingId, findingHash: job.findingHash, results });
+    if (job.result) {
+      if (auditBlockerResultHash(job.result) === submissionHash) return current;
+      throw new Error("Audit Blocker Verifier Binding already submitted a different result");
+    }
+    if (!["starting", "running"].includes(job.status)) throw new Error("Inactive Audit Blocker Verifier Binding");
     const expected = new Set(job.findings.map((finding) => finding.findingId));
     if (results.length !== expected.size || new Set(results.map((result) => result.findingId)).size !== results.length || results.some((result) => !expected.has(result.findingId))) {
       throw new Error("Audit Blocker Verification must cover every current Finding exactly once");
     }
     for (const result of results) {
       if (!result.rationale.trim()) throw new Error(`${result.findingId} verification rationale is empty`);
-      if (result.status === "confirmed" && result.evidence.length === 0) throw new Error(`${result.findingId} confirmed without evidence`);
+      if (result.status === "confirmed" && !hasRepositoryEvidenceSeam(result.evidence)) throw new Error(`${result.findingId} confirmed without a repository evidence seam`);
       if (result.status === "needs_more_evidence" && result.missingEvidence.length === 0) throw new Error(`${result.findingId} needs_more_evidence without naming missing evidence`);
     }
-    const review = { bindingId, findingHash: job.findingHash, results: structuredClone(results), submittedAt: new Date().toISOString() };
-    await this.store.writeAudit(`blocker-verification-${current.auditGeneration ?? 1}-${bindingId}`, review);
+    const auditId = `blocker-verification-${current.auditGeneration ?? 1}-${bindingId}`;
+    const artifactPath = `audits/${auditId}.json`;
+    const existingReview = await this.store.readAudit<AuditBlockerVerifierReview>(auditId);
+    if (existingReview && auditBlockerResultHash(existingReview) !== submissionHash) throw new Error("Immutable Audit Blocker Verification artifact contains a different result");
+    const review: AuditBlockerVerifierReview = existingReview ?? { bindingId, findingHash: job.findingHash, results: structuredClone(results), resultHash: submissionHash, artifactPath, submittedAt: new Date().toISOString() };
+    await this.store.writeAudit(auditId, review);
+    const resultReference = { bindingId: review.bindingId, findingHash: review.findingHash, resultHash: auditBlockerResultHash(review), artifactPath: review.artifactPath ?? artifactPath, submittedAt: review.submittedAt };
     return this.store.transact("issue_audit_blockers_verified", (state) => {
       const mutable = state.auditBlockerVerifierJob!;
-      mutable.result = review;
+      if (mutable.result) {
+        if (auditBlockerResultHash(mutable.result) === submissionHash) return;
+        throw new Error("Audit Blocker Verifier concurrently submitted a different result");
+      }
+      mutable.result = resultReference;
       mutable.status = "result_submitted";
       const confirmed = results.filter((result) => result.status === "confirmed").map((result) => result.findingId);
       const unresolved = results.filter((result) => result.status === "needs_more_evidence");
@@ -978,9 +1253,8 @@ export class RuntimeService {
         };
       } else {
         state.issueStatus = "auditing";
+        state.auditInvalidatedAxes = [...new Set(mutable.findings.map((finding) => finding.axis))].sort();
         delete state.humanDecision;
-        delete state.auditJobs;
-        state.audits = {};
         delete state.auditBlockerVerifierJob;
         delete state.remediationPlan;
       }
@@ -1104,6 +1378,7 @@ export class RuntimeService {
         state.issueStatus = "blocked";
         if (state.remediationPlan) {
           state.remediationPlan.status = resumeAction === "resume_planner" ? "awaiting_proposal" : "needs_user";
+          if (resumeAction === "resume_planner") delete state.remediationPlan.plannerJob;
           state.remediationPlan.updatedAt = new Date().toISOString();
         }
         if (resumeAction === "rerun_verifier") delete state.auditBlockerVerifierJob;
@@ -1126,7 +1401,7 @@ export class RuntimeService {
     const plan = current.remediationPlan;
     const job = plan?.plannerJob;
     if (!plan || !job || !["pending", "retry_ready", "interrupted"].includes(job.status)) throw new Error("Remediation Planner is not claimable");
-    if (binding.findingHash !== plan.findingHash || binding.attempt !== job.attempt + 1 || job.attempt >= job.maxAttempts) throw new Error("Remediation Planner Binding is invalid");
+    if (binding.findingHash !== plan.findingHash || binding.attempt !== job.attempt + 1) throw new Error("Remediation Planner Binding is invalid");
     await this.store.writeBinding(binding.id, binding);
     return this.store.transact("remediation_planner_claimed", (state) => {
       const mutable = state.remediationPlan!.plannerJob!;
@@ -1141,6 +1416,7 @@ export class RuntimeService {
     return this.store.transact("remediation_planner_bound", (state) => {
       const job = state.remediationPlan?.plannerJob;
       if (!job?.binding || job.binding.id !== bindingId) throw new Error("Remediation Planner Binding mismatch");
+      if (job.status === "infrastructure_failed") return;
       if (job.binding.agentId && job.binding.agentId !== agentId) throw new Error("Remediation Planner already has another Agent");
       job.binding.agentId = agentId;
     }, { details: { bindingId, agentId } });
@@ -1150,29 +1426,41 @@ export class RuntimeService {
     return this.store.transact("remediation_planner_started", (state) => {
       const job = state.remediationPlan?.plannerJob;
       if (job?.binding?.agentId !== agentId) throw new Error("Unknown Remediation Planner Agent");
+      if (job.status === "infrastructure_failed") return;
       job.status = "running";
     }, { details: { agentId } });
   }
 
   async markRemediationPlannerSpawnFailed(bindingId: string, error: string): Promise<IssueRuntimeState> {
-    return this.store.transact("remediation_planner_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.store.transact(subagentFailureEvent(failure, "remediation_planner_spawn_failed"), (state) => {
       const job = state.remediationPlan?.plannerJob;
       if (!job?.binding || job.binding.id !== bindingId || job.status !== "starting") throw new Error("Remediation Planner Binding is not starting");
-      job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry ? "retry_ready" : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
       job.error = error;
-    }, { details: { bindingId, error } });
+      if (!decision.retry && failure.classification === "infrastructure") state.issueStatus = "infrastructure_failed";
+    }, { details: { bindingId, error, failure } });
   }
 
   async markRemediationPlannerTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<IssueRuntimeState> {
-    return this.store.transact("remediation_planner_terminal", (state) => {
+    const message = error ?? `Planner terminated as ${terminal} without a Proposal`;
+    const failure = classifySubagentFailure(message, "lifecycle");
+    return this.store.transact(subagentFailureEvent(failure, "remediation_planner_terminal"), (state) => {
       const job = state.remediationPlan?.plannerJob;
       if (job?.binding?.agentId !== agentId) throw new Error("Unknown Remediation Planner Agent");
-      if (job.status === "proposal_submitted") job.status = "completed";
-      else {
-        job.status = job.attempt >= job.maxAttempts ? "failed" : terminal === "completed" ? "interrupted" : "retry_ready";
-        job.error = error ?? `Planner terminated as ${terminal} without a Proposal`;
+      if (job.status === "infrastructure_failed") return;
+      if (job.status === "proposal_submitted") {
+        job.status = "completed";
+        return;
       }
-    }, { details: { agentId, terminal, ...(error ? { error } : {}) } });
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry
+        ? terminal === "completed" && failure.classification === "semantic" ? "interrupted" : "retry_ready"
+        : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+      job.error = message;
+      if (!decision.retry && failure.classification === "infrastructure") state.issueStatus = "infrastructure_failed";
+    }, { details: { agentId, terminal, failure } });
   }
 
   async markRemediationPlannerProposalSubmitted(bindingId: string): Promise<IssueRuntimeState> {
@@ -1215,12 +1503,26 @@ export class RuntimeService {
   }
 
   async markIssueCompleted(auditReceipt: Record<string, unknown>): Promise<IssueRuntimeState> {
-    await this.store.writeAudit("issue-final", auditReceipt);
+    const current = await this.store.readState();
+    const manifest = await this.store.readManifest();
+    validateFinalIssueReceipt(auditReceipt, current, manifest);
+    await requireImmutableAuditArtifacts(this.store, current, manifest);
+    await requireCleanCompletionWorkspace(manifest.workspaceRoot);
+    await requireTaskReceiptCommitsAtHead(manifest.workspaceRoot, current);
+    const existing = await this.store.readAudit<Record<string, unknown>>("issue-final");
+    if (existing) {
+      const { completedAt: _existingCompletedAt, ...existingComparable } = existing;
+      const { completedAt: _candidateCompletedAt, ...candidateComparable } = auditReceipt;
+      if (stableHash(existingComparable) !== stableHash(candidateComparable)) throw new Error("Final Issue Receipt already exists with different completion evidence");
+    } else {
+      await this.store.writeAudit("issue-final", auditReceipt);
+    }
+    if (current.issueStatus === "completed") return current;
     return this.store.transact("issue_completed", (state) => {
       if (Object.values(state.tasks).some((task) => task.status !== "completed")) throw new Error("Issue has incomplete Tasks");
       if (Object.values(state.sliceGates ?? {}).some((gate) => gate.status !== "passed")) throw new Error("Issue has incomplete Slice Gates");
       state.issueStatus = "completed";
-    }, { details: { auditHash: stableHash(auditReceipt) } });
+    }, { details: { receiptPath: "audits/issue-final.json", reconciled: Boolean(existing) } });
   }
 
   async applyRemediation(amendment: DagAmendment): Promise<IssueRuntimeState> {
@@ -1257,8 +1559,7 @@ export class RuntimeService {
         delete gate.error;
         delete gate.completedAt;
       }
-      delete next.auditJobs;
-      next.audits = {};
+      next.auditInvalidatedAxes = remediationInvalidatedAuditAxes(state);
       delete next.auditBlockerVerifierJob;
       next.remediationPlan = {
         ...next.remediationPlan!,

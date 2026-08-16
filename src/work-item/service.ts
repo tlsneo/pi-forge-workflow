@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { stableHash } from "../runtime/hash.js";
+import { classifySubagentFailure, recordSubagentFailure, subagentFailureEvent } from "../subagents/failures.js";
 import { allReviewSurfaceHashes, reviewSurfaceHash } from "./review-surfaces.js";
 import { WorkItemStore } from "./store.js";
 import type {
@@ -67,7 +68,7 @@ function aggregateAxisReview(state: WorkItemState, axis: ReviewAxis): void {
   const multiple = results.length > 1;
   const findings = results.flatMap((review, index) => review.findings.map((finding) => ({
     ...finding,
-    ...(multiple && finding.id ? { id: `${jobs[index]?.id}:${finding.id}` } : {}),
+    ...(finding.id ? { id: `${jobs[index]!.id}:${finding.id}` } : {}),
   })));
   state.reviews[axis] = {
     axis,
@@ -83,6 +84,10 @@ function refreshReviewStatus(state: WorkItemState): void {
   const prd = state.currentPrd;
   if (!prd) return;
   const currentJobs = Object.values(reviewJobs(state)).filter((job) => job.prdGeneration === prd.generation);
+  if (currentJobs.some((job) => job.status === "infrastructure_failed") || state.blockerVerificationJob?.status === "infrastructure_failed") {
+    state.status = "infrastructure_failed";
+    return;
+  }
   if (currentJobs.some((job) => job.status === "failed")) {
     state.status = "blocked";
     return;
@@ -271,10 +276,11 @@ export class WorkItemService {
       if (ordinals.some((ordinal, index) => ordinal !== index + 1)) throw new Error(`${axis} Review Job ordinals must be contiguous from 1`);
       if (current.reviews[axis]?.verdict === "passed") throw new Error(`${axis} review is already satisfied for PRD Generation ${prd.generation}`);
     }
-    await this.store.writeReviewJobPlan(prd.generation, plans);
     return this.store.transact("prd_review_jobs_created", (state) => {
       const jobs = reviewJobs(state);
       for (const plan of plans) {
+        if (jobs[plan.id]) throw new Error(`PRD Review Job was concurrently created: ${plan.id}`);
+        if (state.currentPrd?.generation !== plan.prdGeneration || state.currentPrd.reviewSurfaceHashes[plan.axis] !== plan.surfaceHash) throw new Error(`${plan.id} PRD surface changed before Job creation`);
         jobs[plan.id] = { ...plan, status: "pending", attempt: 0 };
         delete state.reviews[plan.axis];
       }
@@ -282,31 +288,48 @@ export class WorkItemService {
     }, { prdGeneration: prd.generation, jobIds: plans.map((plan) => plan.id) });
   }
 
-  async recoverInterruptedReviewCoordination(reason: string): Promise<WorkItemState> {
+  async recoverInterruptedReviewCoordination(reason: string, stoppedAgentIds: string[] = []): Promise<WorkItemState> {
     if (!reason.trim()) throw new Error("Review coordination recovery requires a reason");
-    return this.store.transact("prd_review_coordination_recovered", (state) => {
+    const stopped = new Set(stoppedAgentIds);
+    const before = await this.store.readState();
+    const hasUnknownSpawn = [
+      ...Object.values(before.reviewJobs ?? {}),
+      ...(before.blockerVerificationJob ? [before.blockerVerificationJob] : []),
+    ].some((job) => ["starting", "running"].includes(job.status) && !job.binding?.agentId);
+    return this.store.transact(hasUnknownSpawn ? "infrastructure_spawn_outcome_unknown" : "prd_review_coordination_recovered", (state) => {
       const generation = state.currentPrd?.generation;
       if (!generation) throw new Error("No PRD has been submitted");
       for (const job of Object.values(reviewJobs(state))) {
         if (job.prdGeneration !== generation) continue;
         if (["starting", "running"].includes(job.status)) {
           if (job.result) job.status = "completed";
-          else {
+          else if (job.binding?.agentId && stopped.has(job.binding.agentId)) {
             job.status = "interrupted";
             job.error = reason;
+          } else if (job.binding?.agentId) continue;
+          else {
+            job.status = "infrastructure_failed";
+            job.error = `Spawn outcome unknown during review coordination recovery: ${reason}`;
+            job.lastFailure = classifySubagentFailure(job.error, "spawn");
+            job.infrastructureAttempts = (job.infrastructureAttempts ?? 0) + 1;
           }
         }
       }
       const blockerJob = state.blockerVerificationJob;
       if (blockerJob?.prdGeneration === generation && ["starting", "running"].includes(blockerJob.status)) {
         if (blockerJob.results) blockerJob.status = "completed";
-        else {
+        else if (blockerJob.binding?.agentId && stopped.has(blockerJob.binding.agentId)) {
           blockerJob.status = "interrupted";
           blockerJob.error = reason;
+        } else if (!blockerJob.binding?.agentId) {
+          blockerJob.status = "infrastructure_failed";
+          blockerJob.error = `Spawn outcome unknown during review coordination recovery: ${reason}`;
+          blockerJob.lastFailure = classifySubagentFailure(blockerJob.error, "spawn");
+          blockerJob.infrastructureAttempts = (blockerJob.infrastructureAttempts ?? 0) + 1;
         }
       }
       refreshReviewStatus(state);
-    }, { reason });
+    }, { reason, stoppedAgentIds: [...stopped].sort() });
   }
 
   async pendingReviewJobs(): Promise<PrdReviewJob[]> {
@@ -322,7 +345,6 @@ export class WorkItemService {
     const current = await this.store.readState();
     const currentJob = requireReviewJob(current, jobId);
     if (!["pending", "retry_ready", "interrupted"].includes(currentJob.status)) throw new Error(`${jobId} cannot be claimed from ${currentJob.status}`);
-    if (currentJob.attempt >= currentJob.maxAttempts) throw new Error(`${jobId} exhausted its retry budget`);
     if (
       binding.jobId !== currentJob.id
       || binding.prdGeneration !== currentJob.prdGeneration
@@ -333,6 +355,7 @@ export class WorkItemService {
     await this.store.writeReviewBinding(binding);
     return this.store.transact("prd_review_job_claimed", (state) => {
       const job = requireReviewJob(state, jobId);
+      if (!["pending", "retry_ready", "interrupted"].includes(job.status) || job.attempt + 1 !== binding.attempt) throw new Error(`${jobId} was concurrently claimed`);
       job.status = "starting";
       job.attempt += 1;
       job.binding = binding;
@@ -344,6 +367,7 @@ export class WorkItemService {
     return this.store.transact("prd_review_agent_bound", (state) => {
       const job = requireReviewJob(state, jobId);
       if (!job.binding || job.binding.id !== bindingId) throw new Error(`Binding mismatch for ${jobId}`);
+      if (job.status === "infrastructure_failed") return;
       if (job.binding.agentId && job.binding.agentId !== agentId) throw new Error(`${jobId} is already bound to another agent`);
       job.binding.agentId = agentId;
     }, { jobId, bindingId, agentId });
@@ -353,35 +377,41 @@ export class WorkItemService {
     return this.store.transact("prd_review_agent_started", (state) => {
       const job = Object.values(reviewJobs(state)).find((candidate) => candidate.binding?.agentId === agentId);
       if (!job) throw new Error(`Unknown PRD Review Agent binding: ${agentId}`);
+      if (job.status === "infrastructure_failed") return;
       if (!job.result) job.status = "running";
     }, { agentId });
   }
 
   async markReviewSpawnFailed(jobId: string, error: string): Promise<WorkItemState> {
-    return this.store.transact("prd_review_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.store.transact(subagentFailureEvent(failure, "prd_review_spawn_failed"), (state) => {
       const job = requireReviewJob(state, jobId);
       if (job.status !== "starting") throw new Error(`${jobId} is not starting`);
-      job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry ? "retry_ready" : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
       job.error = error;
       refreshReviewStatus(state);
-    }, { jobId, error });
+    }, { jobId, error, failure });
   }
 
   async markReviewAgentTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<WorkItemState> {
-    return this.store.transact("prd_review_agent_terminal", (state) => {
+    const message = error ?? (terminal === "completed" ? "Reviewer stopped without a structured review submission" : `Reviewer terminated as ${terminal}`);
+    const failure = classifySubagentFailure(message, "lifecycle");
+    return this.store.transact(subagentFailureEvent(failure, "prd_review_agent_terminal"), (state) => {
       const job = Object.values(reviewJobs(state)).find((candidate) => candidate.binding?.agentId === agentId);
       if (!job) throw new Error(`Unknown PRD Review Agent binding: ${agentId}`);
+      if (job.status === "infrastructure_failed") return;
       if (job.result) {
         job.status = "completed";
-      } else if (terminal === "completed") {
-        job.status = "interrupted";
-        job.error = error ?? "Reviewer stopped without a structured review submission";
       } else {
-        job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
-        job.error = error ?? `Reviewer terminated as ${terminal}`;
+        const decision = recordSubagentFailure(job, failure);
+        job.status = decision.retry
+          ? terminal === "completed" && failure.classification === "semantic" ? "interrupted" : "retry_ready"
+          : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+        job.error = message;
       }
       refreshReviewStatus(state);
-    }, { agentId, terminal, ...(error ? { error } : {}) });
+    }, { agentId, terminal, failure });
   }
 
   async submitBoundReview(input: {
@@ -405,7 +435,7 @@ export class WorkItemService {
       surfaceHash: input.surfaceHash,
       reviewerId: input.bindingId,
       findings: input.findings,
-      submittedAt: new Date().toISOString(),
+      submittedAt: job.binding.createdAt,
       jobId: job.id,
       bindingId: input.bindingId,
     };
@@ -414,6 +444,11 @@ export class WorkItemService {
     return this.store.transact("prd_bound_review_submitted", (state) => {
       const mutableJob = requireReviewJob(state, job.id);
       if (mutableJob.binding?.id !== input.bindingId) throw new Error(`Binding changed for ${job.id}`);
+      if (mutableJob.result) {
+        if (stableHash(mutableJob.result) === stableHash(review)) return;
+        throw new Error(`${input.bindingId} concurrently submitted a different PRD Review`);
+      }
+      if (!["starting", "running"].includes(mutableJob.status)) throw new Error(`${input.bindingId} changed to terminal PRD Review status before submission`);
       mutableJob.result = review;
       mutableJob.status = "result_submitted";
       individualReviews(state)[job.id] = review;
@@ -453,7 +488,6 @@ export class WorkItemService {
       configGeneration: input.configGeneration,
       configHash: input.configHash,
     };
-    await this.store.writeBlockerVerificationJob(job);
     return this.store.transact("prd_blocker_verification_created", (state) => {
       state.blockerVerificationJob = job;
       state.status = "reviewing";
@@ -465,7 +499,6 @@ export class WorkItemService {
     const job = current.blockerVerificationJob;
     if (!job || job.id !== binding.jobId) throw new Error(`Unknown Blocker Verification Job: ${binding.jobId}`);
     if (!["pending", "retry_ready", "interrupted"].includes(job.status)) throw new Error(`${job.id} cannot be claimed from ${job.status}`);
-    if (job.attempt >= job.maxAttempts) throw new Error(`${job.id} exhausted its retry budget`);
     if (
       binding.prdGeneration !== job.prdGeneration
       || binding.findingHash !== job.findingHash
@@ -486,6 +519,7 @@ export class WorkItemService {
     return this.store.transact("prd_blocker_verifier_bound", (state) => {
       const job = state.blockerVerificationJob;
       if (!job?.binding || job.binding.id !== bindingId) throw new Error(`Blocker Verification Binding mismatch: ${bindingId}`);
+      if (job.status === "infrastructure_failed") return;
       if (job.binding.agentId && job.binding.agentId !== agentId) throw new Error(`${job.id} is already bound to another agent`);
       job.binding.agentId = agentId;
     }, { bindingId, agentId });
@@ -495,35 +529,41 @@ export class WorkItemService {
     return this.store.transact("prd_blocker_verifier_started", (state) => {
       const job = state.blockerVerificationJob;
       if (!job?.binding || job.binding.agentId !== agentId) throw new Error(`Unknown Blocker Verifier Agent: ${agentId}`);
+      if (job.status === "infrastructure_failed") return;
       if (!job.results) job.status = "running";
     }, { agentId });
   }
 
   async markBlockerVerifierSpawnFailed(error: string): Promise<WorkItemState> {
-    return this.store.transact("prd_blocker_verifier_spawn_failed", (state) => {
+    const failure = classifySubagentFailure(error, "spawn");
+    return this.store.transact(subagentFailureEvent(failure, "prd_blocker_verifier_spawn_failed"), (state) => {
       const job = state.blockerVerificationJob;
       if (!job || job.status !== "starting") throw new Error("Blocker Verifier is not starting");
-      job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
+      const decision = recordSubagentFailure(job, failure);
+      job.status = decision.retry ? "retry_ready" : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
       job.error = error;
-      state.status = job.status === "failed" ? "blocked" : "reviewing";
-    }, { error });
+      state.status = decision.retry ? "reviewing" : failure.classification === "infrastructure" ? "infrastructure_failed" : "blocked";
+    }, { error, failure });
   }
 
   async markBlockerVerifierTerminal(agentId: string, terminal: "completed" | "failed" | "stopped" | "aborted", error?: string): Promise<WorkItemState> {
-    return this.store.transact("prd_blocker_verifier_terminal", (state) => {
+    const message = error ?? (terminal === "completed" ? "Blocker Verifier stopped without a structured result" : `Blocker Verifier terminated as ${terminal}`);
+    const failure = classifySubagentFailure(message, "lifecycle");
+    return this.store.transact(subagentFailureEvent(failure, "prd_blocker_verifier_terminal"), (state) => {
       const job = state.blockerVerificationJob;
       if (!job?.binding || job.binding.agentId !== agentId) throw new Error(`Unknown Blocker Verifier Agent: ${agentId}`);
+      if (job.status === "infrastructure_failed") return;
       if (job.results) {
         job.status = "completed";
-      } else if (terminal === "completed") {
-        job.status = "interrupted";
-        job.error = error ?? "Blocker Verifier stopped without a structured result";
       } else {
-        job.status = job.attempt >= job.maxAttempts ? "failed" : "retry_ready";
-        job.error = error ?? `Blocker Verifier terminated as ${terminal}`;
+        const decision = recordSubagentFailure(job, failure);
+        job.status = decision.retry
+          ? terminal === "completed" && failure.classification === "semantic" ? "interrupted" : "retry_ready"
+          : failure.classification === "infrastructure" ? "infrastructure_failed" : "failed";
+        job.error = message;
       }
       refreshReviewStatus(state);
-    }, { agentId, terminal, ...(error ? { error } : {}) });
+    }, { agentId, terminal, failure });
   }
 
   async submitBlockerVerification(bindingId: string, results: PrdBlockerVerificationResult[]): Promise<WorkItemState> {
@@ -546,10 +586,14 @@ export class WorkItemService {
         throw new Error(`${result.findingId} must name the missing evidence`);
       }
     }
-    await this.store.writeBlockerVerificationResult(bindingId, results);
     return this.store.transact("prd_blocker_verification_submitted", (state) => {
       const mutable = state.blockerVerificationJob;
       if (!mutable?.binding || mutable.binding.id !== bindingId) throw new Error(`Blocker Verification Binding changed: ${bindingId}`);
+      if (mutable.results) {
+        if (stableHash(mutable.results) === stableHash(results)) return;
+        throw new Error(`${bindingId} concurrently submitted different Blocker Verification results`);
+      }
+      if (!["starting", "running"].includes(mutable.status)) throw new Error(`${bindingId} changed to terminal Blocker Verification status before submission`);
       mutable.results = results;
       mutable.status = "result_submitted";
       refreshReviewStatus(state);

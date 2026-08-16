@@ -1,3 +1,4 @@
+import { proportionalityPolicyLines } from "../policy/proportionality.js";
 import { REVIEW_CONTRACTS } from "./review-contracts.js";
 import type { PrdFinding, ReviewAxis } from "./types.js";
 
@@ -39,6 +40,9 @@ export function buildPrdReviewPrompt(input: ReviewPromptInput): string {
     "A Blocker requires one of:",
     lines(contract.blockerThreshold),
     "",
+    "Proportionality Policy:",
+    ...proportionalityPolicyLines("review"),
+    "",
     "Read only the frozen axis surface and the evidence needed by this contract. Do not modify files, redesign another axis, or expand scope.",
     "Submit exactly one structured forge_prd_review using this Binding ID and surface hash, then stop.",
   ].join("\n");
@@ -67,7 +71,10 @@ export function buildBlockerVerificationPrompt(input: BlockerPromptInput): strin
     "Verify only these Blockers:",
     JSON.stringify(input.findings, null, 2),
     "",
-    "For each Finding ID return confirmed, rejected, or needs_more_evidence. Reproduce its evidence and verification. Do not run a general fourth review, modify the PRD, or add unrelated findings.",
+    "Proportionality Policy:",
+    ...proportionalityPolicyLines("review"),
+    "",
+    "For each Finding ID return confirmed, rejected, or needs_more_evidence. Confirm only a reachable, contract-bound failure whose verification changes the next action; reject optional-confidence or preference findings. Do not run a general fourth review, modify the PRD, or add unrelated findings.",
     "Submit exactly one structured forge_prd_verify_blockers result using this Binding ID, then stop.",
   ].join("\n");
 }

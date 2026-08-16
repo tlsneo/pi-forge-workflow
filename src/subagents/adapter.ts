@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ThinkingLevel } from "../runtime/types.js";
+import { infrastructureErrorFromMessage, SubagentInfrastructureError } from "./failures.js";
 
 export interface EventBus {
   on(event: string, handler: (payload: any) => void): () => void;
@@ -100,13 +101,13 @@ export class PiSubagentsAdapter {
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         unsubscribe();
-        reject(new Error(`pi-subagents RPC timeout: ${channel}`));
+        reject(new SubagentInfrastructureError("rpc_timeout", `pi-subagents RPC timeout: ${channel}`));
       }, this.timeoutMs);
       const unsubscribe = this.events.on(replyChannel, (reply: { success: boolean; data?: T; error?: string }) => {
         clearTimeout(timeout);
         unsubscribe();
         if (!reply.success) {
-          reject(new Error(reply.error ?? `pi-subagents RPC failed: ${channel}`));
+          reject(infrastructureErrorFromMessage(reply.error ?? `pi-subagents RPC failed: ${channel}`));
           return;
         }
         resolve(reply.data as T);

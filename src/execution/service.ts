@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { resolveModelProfile } from "../model/router.js";
 import { stableHash } from "../runtime/hash.js";
 import { RuntimeService } from "../runtime/service.js";
-import type { TaskConformanceSurface, TaskContract } from "../runtime/types.js";
+import type { TaskConformanceSurface, TaskContract, TaskReceipt } from "../runtime/types.js";
 
 export interface CommandResult {
   command: string;
@@ -79,14 +79,16 @@ export class TaskExecutionService {
 
   async reconcileTaskReceipt(taskId: string): Promise<{ state: Awaited<ReturnType<RuntimeService["status"]>>; reconciled: boolean }> {
     await this.requireFrozenGitRoot();
-    const state = await this.runtime.status();
-    const task = state.tasks[taskId];
-    if (!task?.receipt) throw new Error(`${taskId} has no Task Receipt to reconcile`);
+    const dag = await this.runtime.store.readDag();
+    const contract = dag.tasks.find((candidate) => candidate.id === taskId);
+    if (!contract) throw new Error(`Missing Task contract ${taskId}`);
+    const receipt = await this.runtime.store.readReceipt<TaskReceipt>(taskId, contract.version);
+    if (!receipt) throw new Error(`${taskId} has no Task Receipt to reconcile`);
     const manifest = await this.runtime.store.readManifest();
-    const commitExists = await git(manifest.workspaceRoot, ["cat-file", "-e", `${task.receipt.commit}^{commit}`]);
-    if (commitExists.exitCode !== 0) throw new Error(`${taskId} Receipt commit does not exist: ${task.receipt.commit}`);
-    const ancestor = await git(manifest.workspaceRoot, ["merge-base", "--is-ancestor", task.receipt.commit, "HEAD"]);
-    if (ancestor.exitCode !== 0) throw new Error(`${taskId} Receipt commit is not an ancestor of current HEAD: ${task.receipt.commit}`);
+    const commitExists = await git(manifest.workspaceRoot, ["cat-file", "-e", `${receipt.commit}^{commit}`]);
+    if (commitExists.exitCode !== 0) throw new Error(`${taskId} Receipt commit does not exist: ${receipt.commit}`);
+    const ancestor = await git(manifest.workspaceRoot, ["merge-base", "--is-ancestor", receipt.commit, "HEAD"]);
+    if (ancestor.exitCode !== 0) throw new Error(`${taskId} Receipt commit is not an ancestor of current HEAD: ${receipt.commit}`);
     return this.runtime.reconcileTaskReceipt(taskId);
   }
 
@@ -280,10 +282,7 @@ export class TaskExecutionService {
         const result = await runProcess("bash", ["-lc", check.command], manifest.workspaceRoot, check.timeoutMs);
         const keyOutput = output(result.stdout, result.stderr);
         verification.push({ command: check.command, exitCode: result.exitCode, ...(keyOutput ? { keyOutput } : {}) });
-        if (result.exitCode !== 0) {
-          error = `Slice Gate failed: ${check.command}`;
-          break;
-        }
+        if (result.exitCode !== 0 && !error) error = `Slice Gate failed: ${check.command}`;
       }
       state = await this.runtime.finishSliceGate(gate.id, !error, verification, error);
       if (error) break;
@@ -378,9 +377,11 @@ export class TaskExecutionService {
     }
     const task = state.tasks[taskId];
     const activePolicyGeneration = (await this.runtime.activeModelPolicy()).generation;
-    const attemptsInActivePolicy = task?.attemptsByModelPolicy?.[String(activePolicyGeneration)]
+    const totalAttemptsInActivePolicy = task?.attemptsByModelPolicy?.[String(activePolicyGeneration)]
       ?? ((task?.binding?.modelPolicyGeneration ?? 1) === activePolicyGeneration ? task?.attempt ?? 0 : 0);
-    if (attemptsInActivePolicy >= maxAttempts) return { state: await this.runtime.blockTask(taskId, reason), retried: false as const };
+    const infrastructureAttemptsInActivePolicy = task?.infrastructureAttemptsByModelPolicy?.[String(activePolicyGeneration)] ?? 0;
+    const semanticAttemptsInActivePolicy = Math.max(0, totalAttemptsInActivePolicy - infrastructureAttemptsInActivePolicy);
+    if (semanticAttemptsInActivePolicy >= maxAttempts) return { state: await this.runtime.blockTask(taskId, reason), retried: false as const };
     return { state: await this.runtime.retryTask(taskId, reason), retried: true as const };
   }
 

@@ -4,6 +4,7 @@ import { validateDag } from "../runtime/dag.js";
 import type { TaskContract, TaskDag } from "../runtime/types.js";
 import type { IssueArtifact } from "../issues/types.js";
 import type { ForgeConfig } from "../config/types.js";
+import { validateTaskContextBudget } from "./context-budget.js";
 import type { MicroTaskDraft, SliceDraft } from "./types.js";
 
 function text(value: string, label: string): void {
@@ -73,14 +74,13 @@ export function validateTaskPlan(issue: IssueArtifact, config: ForgeConfig, slic
     text(task.goal, `${task.id} goal`);
     safePath(task.editPoint.path, `${task.id} editPoint.path`);
     text(task.editPoint.symbol, `${task.id} editPoint.symbol`);
-    if (task.reads.length < 1 || task.reads.length > 3) throw new Error(`${task.id} must read between 1 and 3 exact files`);
+    validateTaskContextBudget(task.id, task.reads, task.writes);
     for (const read of task.reads) {
       safePath(read.path, `${task.id} read path`);
       text(read.symbol, `${task.id} read symbol`);
       text(read.reason, `${task.id} read reason`);
     }
     unique(task.writes, `${task.id} writes`);
-    if (task.writes.length > 3) throw new Error(`${task.id} may write at most 3 paths`);
     for (const path of task.writes) safePath(path, `${task.id} write`);
     if (!task.writes.includes(task.editPoint.path)) throw new Error(`${task.id} primary Edit Point must appear in Writes`);
     unique(task.dependencies, `${task.id} dependencies`, true);

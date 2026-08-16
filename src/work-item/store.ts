@@ -9,12 +9,10 @@ import type {
   FrozenPrdReceipt,
   PrdAmendment,
   PrdBlockerVerificationBinding,
-  PrdBlockerVerificationJob,
   PrdBlockerVerificationResult,
   PrdGeneration,
   PrdReview,
   PrdReviewBinding,
-  PrdReviewJobPlan,
   WorkItemEvent,
   WorkItemManifest,
   WorkItemState,
@@ -39,6 +37,7 @@ export class WorkItemStore {
   readonly prdRoot: string;
   readonly issuesRoot: string;
   private readonly lockStore: RuntimeStore;
+  private readonly artifactStore: RuntimeStore;
 
   constructor(root: string) {
     this.root = root;
@@ -49,6 +48,7 @@ export class WorkItemStore {
     this.prdRoot = join(root, "prd");
     this.issuesRoot = join(root, "issues");
     this.lockStore = new RuntimeStore(this.runtimeRoot);
+    this.artifactStore = new RuntimeStore(this.root);
   }
 
   async exists(): Promise<boolean> {
@@ -63,7 +63,6 @@ export class WorkItemStore {
       join(this.prdRoot, "generations"),
       join(this.root, "reviews"),
       join(this.root, "jobs", "bindings"),
-      join(this.root, "jobs", "generations"),
       join(this.root, "jobs", "results"),
       join(this.root, "amendments"),
       join(this.root, "receipts"),
@@ -146,8 +145,7 @@ export class WorkItemStore {
 
   async writePrdGeneration(generation: PrdGeneration): Promise<void> {
     const generationPath = join(this.prdRoot, "generations", `prd-${generation.generation}.json`);
-    if (await exists(generationPath)) throw new Error(`PRD Generation ${generation.generation} already exists`);
-    await atomicWriteJson(generationPath, generation);
+    await this.artifactStore.writeImmutableArtifact(`prd/generations/prd-${generation.generation}.json`, generation);
     await atomicWriteJson(join(this.prdRoot, "prd.json"), generation);
     await atomicWriteJson(join(this.root, "discovery", "evidence.json"), generation.prd.impactEvidence);
     const rendered = renderPrd(generation);
@@ -162,47 +160,21 @@ export class WorkItemStore {
   }
 
   async writeAmendment(amendment: PrdAmendment): Promise<void> {
-    const path = join(this.root, "amendments", `${amendment.id}.json`);
-    if (await exists(path)) throw new Error(`PRD Amendment already exists: ${amendment.id}`);
-    await atomicWriteJson(path, amendment);
+    await this.artifactStore.writeImmutableArtifact(`amendments/${amendment.id}.json`, amendment);
   }
 
   async writeReview(generation: number, review: PrdReview): Promise<void> {
     const suffix = review.jobId ? `-${review.jobId}` : "";
-    const path = join(this.root, "reviews", `prd-${generation}-${review.axis}${suffix}.json`);
-    if (await exists(path)) throw new Error(`${review.axis} review already exists for PRD Generation ${generation}${review.jobId ? ` Job ${review.jobId}` : ""}`);
-    await atomicWriteJson(path, review);
-    if (review.bindingId) await atomicWriteJson(join(this.root, "jobs", "results", `${review.bindingId}.json`), review);
-  }
-
-  async writeReviewJobPlan(generation: number, plans: PrdReviewJobPlan[]): Promise<void> {
-    const path = join(this.root, "jobs", "generations", `prd-${generation}.json`);
-    if (await exists(path)) throw new Error(`Review Job plan already exists for PRD Generation ${generation}`);
-    await atomicWriteJson(path, { schemaVersion: 1, prdGeneration: generation, jobs: plans });
+    await this.artifactStore.writeImmutableArtifact(`reviews/prd-${generation}-${review.axis}${suffix}.json`, review);
   }
 
   async writeReviewBinding(binding: PrdReviewBinding | PrdBlockerVerificationBinding): Promise<void> {
-    const path = join(this.root, "jobs", "bindings", `${binding.id}.json`);
-    if (await exists(path)) throw new Error(`Review Binding already exists: ${binding.id}`);
-    await atomicWriteJson(path, binding);
-  }
-
-  async writeBlockerVerificationJob(job: PrdBlockerVerificationJob): Promise<void> {
-    const path = join(this.root, "jobs", "generations", `prd-${job.prdGeneration}-blocker-verification.json`);
-    if (await exists(path)) throw new Error(`Blocker Verification Job already exists for PRD Generation ${job.prdGeneration}`);
-    await atomicWriteJson(path, job);
-  }
-
-  async writeBlockerVerificationResult(bindingId: string, results: PrdBlockerVerificationResult[]): Promise<void> {
-    const path = join(this.root, "jobs", "results", `${bindingId}.json`);
-    if (await exists(path)) throw new Error(`Blocker Verification result already exists for Binding ${bindingId}`);
-    await atomicWriteJson(path, { schemaVersion: 1, bindingId, results });
+    await this.artifactStore.writeImmutableArtifact(`jobs/bindings/${binding.id}.json`, binding);
   }
 
   async writeIssuesGeneration(generation: IssuesGeneration, manifest: IssuesManifest): Promise<void> {
     const generationPath = join(this.issuesRoot, "generations", `issues-${generation.generation}.json`);
-    if (await exists(generationPath)) throw new Error(`Issues Generation ${generation.generation} already exists`);
-    await atomicWriteJson(generationPath, generation);
+    await this.artifactStore.writeImmutableArtifact(`issues/generations/issues-${generation.generation}.json`, generation);
     const prd = (await this.readPrdGeneration(generation.source.prdGeneration)).prd;
     for (const issue of generation.issues) {
       await atomicWriteJson(join(this.issuesRoot, issue.id, "issue.json"), issue);
@@ -218,8 +190,6 @@ export class WorkItemStore {
   }
 
   async writeFrozenReceipt(receipt: FrozenPrdReceipt): Promise<void> {
-    const path = join(this.root, "receipts", `prd-${receipt.generation}.json`);
-    if (await exists(path)) throw new Error(`Frozen PRD Receipt already exists for Generation ${receipt.generation}`);
-    await atomicWriteJson(path, receipt);
+    await this.artifactStore.writeImmutableArtifact(`receipts/prd-${receipt.generation}.json`, receipt);
   }
 }

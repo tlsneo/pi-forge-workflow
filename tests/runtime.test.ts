@@ -59,6 +59,25 @@ async function completeFirstTask(service: RuntimeService, contractHash: string) 
 }
 
 describe("RuntimeService", () => {
+  it("creates immutable artifacts without allowing concurrent overwrite", async () => {
+    const { service } = await createRuntime();
+    const results = await Promise.allSettled([
+      service.store.writeImmutableArtifact("audits/race.json", { value: 1 }),
+      service.store.writeImmutableArtifact("audits/race.json", { value: 2 }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect([1, 2]).toContain((await service.store.readImmutableArtifact<{ value: number }>("audits/race.json"))?.value);
+
+    const receiptResults = await Promise.allSettled([
+      service.store.writeReceipt("T99", { taskVersion: 1, commit: "one" }),
+      service.store.writeReceipt("T99", { taskVersion: 1, commit: "two" }),
+    ]);
+    expect(receiptResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(receiptResults.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(["one", "two"]).toContain((await service.store.readReceipt<{ commit: string }>("T99"))?.commit);
+  });
+
   it("defaults legacy Runtime manifests to Standard Assurance", async () => {
     const { root, service } = await createRuntime();
     const manifestPath = join(root, "manifest.json");
@@ -274,6 +293,8 @@ describe("RuntimeService", () => {
       state.issueStatus = "blocked";
       state.auditGeneration = 1;
       state.audits = {
+        standards: { axis: "standards", verdict: "passed", bindingId: "standards-binding", submittedAt: new Date().toISOString(), findings: [] },
+        acceptance_integration: { axis: "acceptance_integration", verdict: "passed", bindingId: "acceptance-binding", submittedAt: new Date().toISOString(), findings: [] },
         architecture_minimality: {
           axis: "architecture_minimality",
           verdict: "blocked",
@@ -284,6 +305,7 @@ describe("RuntimeService", () => {
       };
     });
     let state = await service.createAuditBlockerVerifierJob({ model: "test/verifier", thinking: "high", maxTurns: 20, configHash: "config" });
+    await expect(readFile(join(service.store.root, "audits", "blocker-verifier-plan-1.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     const job = state.auditBlockerVerifierJob!;
     const binding = RuntimeService.createAuditBlockerVerifierBinding({ attempt: 1, findingHash: job.findingHash, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: state.generation });
     await service.claimAuditBlockerVerifier(binding);
@@ -298,7 +320,11 @@ describe("RuntimeService", () => {
     await service.store.transact("test_audit_blocked", (state) => {
       state.issueStatus = "blocked";
       state.auditGeneration = 1;
-      state.audits = { standards: { axis: "standards", verdict: "blocked", bindingId: "audit-binding", submittedAt: new Date().toISOString(), findings: [{ id: "STD-1", severity: "blocker", message: "Generated artifact may be stale", evidence: ["generated/file.ts"], violatedRule: "Generated files must match source", verification: "Run generator" }] } };
+      state.audits = {
+        standards: { axis: "standards", verdict: "blocked", bindingId: "audit-binding", submittedAt: new Date().toISOString(), findings: [{ id: "STD-1", severity: "blocker", message: "Generated artifact may be stale", evidence: ["generated/file.ts"], violatedRule: "Generated files must match source", verification: "Run generator", suggestedResolution: "Regenerate only generated/file.ts from its authoritative source" }] },
+        acceptance_integration: { axis: "acceptance_integration", verdict: "passed", bindingId: "acceptance-binding", submittedAt: new Date().toISOString(), findings: [] },
+        architecture_minimality: { axis: "architecture_minimality", verdict: "passed", bindingId: "architecture-binding", submittedAt: new Date().toISOString(), findings: [] },
+      };
     });
     let state = await service.createAuditBlockerVerifierJob({ model: "test/verifier", thinking: "high", maxTurns: 20, configHash: "config" });
     const job = state.auditBlockerVerifierJob!;
@@ -339,6 +365,88 @@ describe("RuntimeService", () => {
     const resumed = await service.resumeHumanDecision(state.humanDecision!.id);
     expect(resumed.action).toBe("supersede_work_item");
     expect(resumed.state.issueStatus).toBe("needs_user");
+  });
+
+  it("clears an exhausted Planner projection when an answered Decision resumes planning", async () => {
+    const { service } = await createRuntime();
+    const createdAt = new Date().toISOString();
+    await service.store.transact("test_exhausted_planner", (state) => {
+      state.issueStatus = "blocked";
+      state.remediationPlan = {
+        id: "remediation-1",
+        source: "audit",
+        sourceAuditGeneration: 1,
+        findingHash: "finding-hash",
+        confirmedFindingIds: ["F-1"],
+        status: "awaiting_proposal",
+        createdAt,
+        updatedAt: createdAt,
+        plannerJob: {
+          status: "failed",
+          attempt: 3,
+          maxAttempts: 2,
+          model: "test/planner",
+          thinking: "high",
+          maxTurns: 20,
+          configHash: "config",
+          binding: { id: "planner-binding", attempt: 3, spawnRequestId: "spawn", findingHash: "finding-hash", model: "test/planner", thinking: "high", maxTurns: 20, startedGeneration: state.generation, createdAt },
+          error: "Planner terminated without a Proposal",
+        },
+      };
+    });
+    let state = await service.requestHumanDecision({
+      kind: "missing_evidence",
+      source: "remediation_planner",
+      sourceBindingId: "planner-binding",
+      question: "May the normalized evidence seam be used?",
+      reason: "The original citation was not consumable by the Task validator.",
+      evidence: ["src/request-policy.js:2-8"],
+      options: [
+        { id: "resume", label: "Resume", description: "Use the normalized seam", consequences: ["Creates a fresh Planner binding"], resumeAction: "resume_planner" },
+        { id: "abort", label: "Abort", description: "Stop remediation", consequences: ["Leaves the Issue blocked"], resumeAction: "abort_issue" },
+      ],
+      recommendedOptionId: "resume",
+      resumeAction: "resume_planner",
+    });
+    state = await service.answerHumanDecision({ requestId: state.humanDecision!.id, requestHash: state.humanDecision!.requestHash, selectedOptionId: "resume", decision: "Resume planning", rationale: "The seam normalization preserves scope", evidence: ["User approved"], answeredBy: "user", authorizationEvidence: "Exact user statement" });
+    const resumed = await service.resumeHumanDecision(state.humanDecision!.id);
+    expect(resumed.action).toBe("resume_planner");
+    expect(resumed.state.remediationPlan?.status).toBe("awaiting_proposal");
+    expect(resumed.state.remediationPlan?.plannerJob).toBeUndefined();
+    const recreated = await service.createRemediationPlannerJob({ model: "test/planner", thinking: "high", maxTurns: 20, configHash: "config" });
+    expect(recreated.remediationPlan?.plannerJob?.status).toBe("pending");
+    expect(recreated.remediationPlan?.plannerJob?.attempt).toBe(0);
+  });
+
+  it("reconciles an immutable final Issue Receipt written before the completion state transition", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-task-runtime-final-reconcile-"));
+    roots.push(root);
+    const workspaceRoot = join(root, "repo");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(workspaceRoot));
+    await writeFile(join(workspaceRoot, "README.md"), "fixture\n");
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("git", ["init", "-q"], { cwd: workspaceRoot });
+    execFileSync("git", ["config", "user.email", "forge@example.com"], { cwd: workspaceRoot });
+    execFileSync("git", ["config", "user.name", "Forge Test"], { cwd: workspaceRoot });
+    execFileSync("git", ["add", "."], { cwd: workspaceRoot });
+    execFileSync("git", ["commit", "-qm", "baseline"], { cwd: workspaceRoot });
+    const service = new RuntimeService(join(root, "runtime"));
+    await service.initialize({ workItemId: "WI", issueId: "I001", issueHash: "issue", workspaceRoot, workspaceMode: "shared-serial", modelPolicy }, { generation: 1, tasks: [] }, [{ id: "S001", gate: [] }]);
+    const audits = {
+      standards: { axis: "standards" as const, verdict: "passed" as const, bindingId: "std", findings: [], submittedAt: "now" },
+      acceptance_integration: { axis: "acceptance_integration" as const, verdict: "passed" as const, bindingId: "acc", findings: [], submittedAt: "now" },
+      architecture_minimality: { axis: "architecture_minimality" as const, verdict: "passed" as const, bindingId: "arch", findings: [], submittedAt: "now" },
+    };
+    await service.store.transact("test_ready_for_completion", (state) => { state.issueStatus = "auditing"; state.sliceGates!.S001!.status = "passed"; state.audits = audits; });
+    const receipt = { schemaVersion: 1, issueId: "I001", audits, completedAt: "first" };
+    await service.store.writeAudit("issue-final", receipt);
+    await writeFile(join(workspaceRoot, "untracked.txt"), "dirty\n");
+    await expect(service.markIssueCompleted({ ...receipt, completedAt: "retry" })).rejects.toThrow("clean Git workspace");
+    await rm(join(workspaceRoot, "untracked.txt"));
+    const completed = await service.markIssueCompleted({ ...receipt, completedAt: "retry" });
+    expect(completed.issueStatus).toBe("completed");
+    expect(await service.store.readAudit("issue-final")).toEqual(receipt);
+    expect((await service.store.readEvents()).at(-1)?.details).toMatchObject({ reconciled: true });
   });
 
   it("does not treat an agent completion without handoff as Task completion", async () => {

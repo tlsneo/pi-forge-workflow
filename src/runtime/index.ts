@@ -1,5 +1,7 @@
+export * from "./audit-surfaces.js";
 export * from "./blueprint.js";
 export * from "./dag.js";
+export * from "./evidence.js";
 export * from "./hash.js";
 export * from "./service.js";
 export * from "./remediation-validation.js";

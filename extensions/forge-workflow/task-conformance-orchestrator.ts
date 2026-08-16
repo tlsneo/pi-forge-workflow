@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { proportionalityPolicyLines } from "../../src/policy/proportionality.js";
 import { RuntimeService } from "../../src/runtime/service.js";
 import type { TaskConformanceJob } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
@@ -45,6 +46,9 @@ function prompt(runtimeRoot: string, taskId: string, job: TaskConformanceJob, bi
     "5. Check local correctness, unchanged branches, Minimal Implementation Policy, repository conventions at the edited Seam, and concrete safety or concurrency risks introduced by this Task.",
     "6. Treat a Stop Condition mismatch, missing Blueprint Evidence, unauthorized fallback, unrequested abstraction, unrelated cleanup, or verification gap as a Blocker.",
     "",
+    "Proportionality Policy:",
+    ...proportionalityPolicyLines("review"),
+    "",
     "Finding policy:",
     "- A Blocker means the Task cannot be committed as the frozen Task result.",
     "- Warnings and Notes record concrete non-blocking observations and do not request redesign.",
@@ -75,15 +79,13 @@ export class TaskConformanceOrchestrator {
     let job = task?.conformanceJob;
     if (!job) throw new Error(`${taskId} has no Task Conformance Job`);
     if (job.status === "starting" && !job.binding?.agentId) {
-      await service.markTaskConformanceSpawnFailed(taskId, "Recovered an interrupted Task Conformance spawn before Agent binding");
+      await service.markTaskConformanceSpawnFailed(taskId, "Agent lifecycle missing during recovery before Task Conformance binding");
       task = (await service.status()).tasks[taskId];
       job = task?.conformanceJob;
     }
     if (!job) throw new Error(`${taskId} lost its Task Conformance Job during recovery`);
     if (!["pending", "retry_ready", "interrupted"].includes(job.status)) return { taskId, status: job.status };
     const model = await resolveExactModel(ctx, job.model);
-    const protocol = await this.adapter.ping();
-    if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
     this.models.set(`${runtimeRoot}:${taskId}`, model);
     return this.spawn(runtimeRoot, taskId, job, model);
   }
@@ -120,6 +122,8 @@ export class TaskConformanceOrchestrator {
     const location = { runtimeRoot, taskId, bindingId: binding.id };
     this.bindings.set(binding.id, location);
     try {
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({
         type: "forge-reviewer",
         prompt: prompt(runtimeRoot, taskId, job, binding.id),
@@ -134,8 +138,8 @@ export class TaskConformanceOrchestrator {
       return { taskId, agentId, status: "started" };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await service.markTaskConformanceSpawnFailed(taskId, message);
-      return { taskId, status: "failed", error: message };
+      const failed = await service.markTaskConformanceSpawnFailed(taskId, message);
+      return { taskId, status: failed.tasks[taskId]?.conformanceJob?.status ?? "failed", error: message };
     }
   }
 
@@ -169,7 +173,7 @@ export class TaskConformanceOrchestrator {
       if ((await service.locateTaskConformance(location.bindingId))?.result) return;
       const state = await service.markTaskConformanceAgentTerminal(event.id, terminal, event.error);
       const job = state.tasks[location.taskId]?.conformanceJob;
-      if (!job || job.result || !["retry_ready", "interrupted"].includes(job.status) || job.attempt >= job.maxAttempts) return;
+      if (!job || job.result || !["retry_ready", "interrupted"].includes(job.status)) return;
       const model = this.models.get(`${location.runtimeRoot}:${location.taskId}`);
       if (model) await this.spawn(location.runtimeRoot, location.taskId, job, model);
     })().catch((error) => console.error("[pi-forge-workflow] Task Conformance Auditor terminal event failed", error));

@@ -75,7 +75,7 @@ function config(overrides: Partial<ForgeConfig> = {}): ForgeConfig {
     },
     commands: { typecheck: "npm run typecheck", test: "npm test" },
     agents: { directory: ".pi/agents", templateVersion: 2 },
-    instructions: { file: "AGENTS.md", managedSection: "forge-workflow", templateVersion: 1 },
+    instructions: { file: "AGENTS.md", managedSection: "forge-workflow", templateVersion: 2 },
     repositoryContext: { mode: "discovered", entryPoints: [], architectureDocs: [], adrDirectories: [], supplementalInstructions: [] },
     ...overrides,
   };
@@ -102,7 +102,10 @@ describe("ForgeConfigService", () => {
     await expect(readFile(join(root, ".pi", "agents", "forge-researcher.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(join(root, ".pi", "agents", "forge-designer.md"), "utf8")).toContain("Forge Remediation Planner");
     expect(await readFile(join(root, ".gitignore"), "utf8")).toContain("/.forge/");
-    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("<!-- pi-forge-workflow:start -->");
+    const instructions = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(instructions).toContain("<!-- pi-forge-workflow:start -->");
+    expect(instructions).toContain("### Proportionality Policy");
+    expect(instructions).toContain("live uncertainty");
     const explore = await readFile(join(root, ".pi", "agents", "Explore.md"), "utf8");
     const plan = await readFile(join(root, ".pi", "agents", "Plan.md"), "utf8");
     expect(explore).toContain("model: test/simple");
@@ -232,7 +235,9 @@ describe("ForgeConfigService", () => {
     expect(upgrade.changes.some((change) => change.path.endsWith("AGENTS.md") && change.action === "update")).toBe(true);
     expect(upgrade.changes.some((change) => change.path.endsWith("AGENTS.md") && change.action === "conflict")).toBe(false);
     await service.apply({ config: config(), expectedPreviewHash: upgrade.previewHash, availableModels: models });
-    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("Repository Context sources");
+    const upgradedInstructions = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(upgradedInstructions).toContain("Repository Context sources");
+    expect(upgradedInstructions).toContain("### Proportionality Policy");
   });
 
   it("fails closed on locally modified managed Forge instructions without path approval", async () => {

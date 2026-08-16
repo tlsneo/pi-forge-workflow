@@ -191,6 +191,7 @@ export class TasksService {
         workspaceMode: config.workspace.mode,
         assuranceProfile: config.review.preset,
         taskConformanceRequired: true,
+        acceptanceEvidenceRequired: true,
         modelPolicy: this.modelPolicy(config),
         modelPolicySource: { configGeneration: config.generation, configHash: stableHash(config) },
       }, dag, slices);

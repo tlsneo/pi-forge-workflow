@@ -15,7 +15,7 @@ interface Location {
 }
 
 interface SpawnResult {
-  status: "started" | "passed" | "blocked" | "frozen" | "failed";
+  status: "started" | "passed" | "blocked" | "frozen" | "retry_ready" | "failed" | "infrastructure_failed";
   proposalGeneration: number;
   proposalHash: string;
   bindingId?: string;
@@ -84,17 +84,19 @@ export class TaskPreflightOrchestrator {
     const prepared = await tasksService.prepare(input.issueId, input.slices, input.tasks);
     const route = resolveRoute(prepared.config);
     const model = await resolveExactModel(input.ctx, route.model);
-    const protocol = await this.adapter.ping();
-    if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
     const service = new TaskPreflightService(input.workItemRoot, input.issueId);
-    const proposal = await service.propose(prepared, route);
+    let proposal = await service.propose(prepared, route);
+    if (proposal.state.status === "starting" && proposal.state.job.binding && !proposal.state.job.binding.agentId) {
+      const recovered = await service.markSpawnFailed(proposal.state.job.binding.id, "Agent lifecycle missing during recovery before Task Preflight binding");
+      proposal = { ...proposal, state: recovered };
+    }
     await this.index(input.workItemRoot, input.issueId);
 
     if (proposal.state.status === "passed") {
       const frozen = await this.freezePassed(input.workItemRoot, input.issueId);
       return { status: "frozen", proposalGeneration: proposal.proposal.generation, proposalHash: proposal.proposal.proposalHash, taskPlanHash: frozen.manifest.contentHash };
     }
-    if (proposal.state.status === "blocked" || proposal.state.status === "failed") {
+    if (proposal.state.status === "blocked" || proposal.state.status === "failed" || proposal.state.status === "infrastructure_failed") {
       return { status: proposal.state.status, proposalGeneration: proposal.proposal.generation, proposalHash: proposal.proposal.proposalHash, ...(proposal.state.job.lastError ? { error: proposal.state.job.lastError } : {}) };
     }
     if (!["pending", "retry_ready", "interrupted"].includes(proposal.state.status)) {
@@ -139,8 +141,7 @@ export class TaskPreflightOrchestrator {
     const state = await service.status();
     if (!state || state.status !== "passed" || state.job.result?.verdict !== "passed") throw new Error("Task Preflight has not passed");
     const proposal = await service.readProposal();
-    const receipt = await service.readReceipt();
-    if (!receipt) throw new Error("Passed Task Preflight Receipt is missing");
+    const { receipt } = await service.validatePassedEvidence();
     const frozen = await new TasksService(workItemRoot).submit(issueId, proposal.slices, proposal.tasks, {
       proposalGeneration: receipt.proposalGeneration,
       proposalHash: receipt.proposalHash,
@@ -173,6 +174,8 @@ export class TaskPreflightOrchestrator {
     const location = { workItemRoot, issueId, proposalGeneration: state.activeProposalGeneration, bindingId: binding.id };
     this.bindings.set(binding.id, location);
     try {
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({
         type: "forge-reviewer",
         prompt: buildTaskPreflightPrompt({ workItemRoot, proposal, bindingId: binding.id }),
@@ -187,8 +190,8 @@ export class TaskPreflightOrchestrator {
       return { status: "started", proposalGeneration: proposal.generation, proposalHash: proposal.proposalHash, bindingId: binding.id, agentId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await service.markSpawnFailed(binding.id, message);
-      return { status: "failed", proposalGeneration: proposal.generation, proposalHash: proposal.proposalHash, bindingId: binding.id, error: message };
+      const failed = await service.markSpawnFailed(binding.id, message);
+      return { status: failed.status === "retry_ready" || failed.status === "infrastructure_failed" ? failed.status : "failed", proposalGeneration: proposal.generation, proposalHash: proposal.proposalHash, bindingId: binding.id, error: message };
     }
   }
 
@@ -217,7 +220,7 @@ export class TaskPreflightOrchestrator {
       if (!location) return;
       const service = new TaskPreflightService(location.workItemRoot, location.issueId);
       const state = await service.markTerminal(event.id, terminal, event.error);
-      if (state.job.result || !["retry_ready", "interrupted"].includes(state.status) || state.job.attempt >= state.job.maxAttempts) return;
+      if (state.job.result || !["retry_ready", "interrupted"].includes(state.status)) return;
       const model = this.models.get(`${location.workItemRoot}:${location.issueId}`);
       if (model) await this.spawn(location.workItemRoot, location.issueId, model);
     })().catch((error) => console.error("[pi-forge-workflow] Task Preflight terminal event failed", error));

@@ -1,11 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadForgeConfig, resolveForgeProfile } from "../../src/config/resolver.js";
+import { proportionalityPolicyLines } from "../../src/policy/proportionality.js";
 import { RuntimeService } from "../../src/runtime/service.js";
-import type { AuditBlockerVerificationResult } from "../../src/runtime/types.js";
+import type { AuditBlockerVerificationResult, AuditBlockerVerifierReview } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
 import { RemediationService } from "../../src/tasks/remediation-service.js";
 import { TaskPreflightService } from "../../src/tasks/preflight-service.js";
-import type { TaskPreflightFinding, TaskPreflightVerdict } from "../../src/tasks/preflight-types.js";
+import type { TaskPreflightFinding, TaskPreflightProposal, TaskPreflightState, TaskPreflightVerdict } from "../../src/tasks/preflight-types.js";
 import type { MicroTaskDraft } from "../../src/tasks/types.js";
 
 interface VerifierLocation { kind: "verifier"; runtimeRoot: string; bindingId: string }
@@ -24,11 +25,40 @@ async function resolveExactModel(ctx: ExtensionContext, input: string): Promise<
 function verifierDescription(bindingId: string): string { return `forge-audit-blocker-verifier:${bindingId}`; }
 function preflightDescription(bindingId: string, issueId: string, generation: number): string { return `forge-remediation-preflight:${bindingId}:${issueId}:${generation}`; }
 
+function remediationPreflightPrompt(input: {
+  runtimeRoot: string;
+  bindingId: string;
+  proposal: TaskPreflightProposal;
+  service: TaskPreflightService;
+  remediation: RemediationService;
+}): string {
+  return [
+    "Role: independent Forge Remediation Task Preflight Reviewer",
+    `Binding ID: ${input.bindingId}`,
+    `Runtime root: ${input.runtimeRoot}`,
+    `Proposal: ${input.service.root}/proposals/proposal-${input.proposal.generation}.json`,
+    `Proposal hash: ${input.proposal.proposalHash}`,
+    `Confirmed Finding hash: ${input.proposal.sourceFindingHash}`,
+    `Frozen PRD generation/hash: ${input.proposal.sourcePrdGeneration}/${input.proposal.sourcePrdHash}`,
+    `Frozen Issue hash: ${input.proposal.sourceIssueHash}`,
+    `Frozen Acceptance IDs: ${(input.proposal.acceptanceIds ?? []).join(", ")}`,
+    `Frozen Decision IDs: ${(input.proposal.decisionIds ?? []).join(", ")}`,
+    `Frozen PRD: ${input.remediation.workItemRoot}/PRD.md`,
+    `Frozen Issue: ${input.remediation.issueRoot}/ISSUE.md`,
+    "",
+    "Read the frozen PRD and Issue as authoritative constraints. Check that every repair Task is a small directly executable commit, reads only exact evidence seams, has a detailed Blueprint, stays within the confirmed Finding and Issue scope, preserves Acceptance/Decisions/non-goals, forbids unauthorized Fallback, keeps app/composition-root Modules thin without pass-through file fragmentation, and names focused verification and affected Slice Gates.",
+    "Proportionality Policy:",
+    ...proportionalityPolicyLines("review"),
+    "If the Proposal conflicts with repository instructions, frozen PRD/Issue requirements, accepted Decisions, audit requirements, Task/DAG contracts, Git/workspace safety rules, architecture/public Interface/scope, or exposes an unresolved product choice, request human input through forge_run_human_decision_request instead of merely suggesting an implementation. Otherwise block any Task that requires investigation, changes frozen Acceptance or architecture, combines independently committable repairs, lacks direct Finding traceability, or proposes optional-confidence work beyond the confirmed repair.",
+    "Do not modify files. Call forge_run_remediation_preflight_submit exactly once, then stop.",
+  ].join("\n");
+}
+
 export class AuditRemediationOrchestrator {
   private readonly adapter: PiSubagentsAdapter;
   private readonly bindings = new Map<string, Location>();
   private readonly agents = new Map<string, Location>();
-  private readonly models = new Map<string, unknown>();
+  private readonly contexts = new Map<string, ExtensionContext>();
   private readonly continueHandlers = new Set<(runtimeRoot: string) => void | Promise<void>>();
   private readonly reauditHandlers = new Set<(runtimeRoot: string) => void | Promise<void>>();
 
@@ -50,15 +80,17 @@ export class AuditRemediationOrchestrator {
   }
 
   async startVerifier(runtimeRoot: string, ctx: ExtensionContext) {
+    this.contexts.set(runtimeRoot, ctx);
     const runtime = new RuntimeService(runtimeRoot);
     const manifest = await runtime.store.readManifest();
     const config = await loadForgeConfig(manifest.controlRoot);
     const route = resolveForgeProfile(config, "blockerVerifier");
     const model = await resolveExactModel(ctx, route.model);
-    const protocol = await this.adapter.ping();
-    if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
     let state = await runtime.status();
     if (!state.auditBlockerVerifierJob) state = await runtime.createAuditBlockerVerifierJob({ model: route.model, thinking: route.thinking, maxTurns: route.maxTurns, configHash: route.configHash });
+    if (state.auditBlockerVerifierJob?.status === "starting" && state.auditBlockerVerifierJob.binding && !state.auditBlockerVerifierJob.binding.agentId) {
+      state = await runtime.markAuditBlockerVerifierSpawnFailed("Agent lifecycle missing during recovery before final Audit Blocker Verifier binding");
+    }
     const job = state.auditBlockerVerifierJob!;
     if (!["pending", "retry_ready", "interrupted"].includes(job.status)) return { status: job.status, bindingId: job.binding?.id, agentId: job.binding?.agentId };
     const binding = RuntimeService.createAuditBlockerVerifierBinding({
@@ -72,7 +104,6 @@ export class AuditRemediationOrchestrator {
     await runtime.claimAuditBlockerVerifier(binding);
     const location: VerifierLocation = { kind: "verifier", runtimeRoot, bindingId: binding.id };
     this.bindings.set(binding.id, location);
-    this.models.set(`verifier:${runtimeRoot}`, model);
     const findings = job.findings.map((reference) => ({ id: reference.findingId, axis: reference.axis, finding: reference.finding }));
     const prompt = [
       "Role: independent Forge final Audit Blocker Verifier",
@@ -83,21 +114,25 @@ export class AuditRemediationOrchestrator {
       `Finding hash: ${job.findingHash}`,
       "",
       "Verify only the listed Blockers against the final committed code and frozen Issue evidence. Do not widen scope or modify files.",
+      "Proportionality Policy:",
+      ...proportionalityPolicyLines("review"),
       "For every Finding return exactly one status: confirmed, rejected, or needs_more_evidence.",
-      "Confirmed requires direct evidence. Rejected requires a concrete contradiction. needs_more_evidence must name exactly what evidence is missing.",
+      "Confirmed requires direct evidence including at least one exact repository path, path#line citation, or path#symbol Seam usable by a bounded repair Task. Rejected requires a concrete contradiction. needs_more_evidence must name exactly what evidence is missing.",
       JSON.stringify(findings, null, 2),
       "",
       "Call forge_run_audit_blockers_verify exactly once with this Runtime root, Binding ID, and one result for every Finding, then stop.",
     ].join("\n");
     try {
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt, description: verifierDescription(binding.id), model, thinkingLevel: binding.thinking, maxTurns: binding.maxTurns, cwd: manifest.workspaceRoot });
       await runtime.bindAuditBlockerVerifier(binding.id, agentId);
       this.agents.set(agentId, location);
       return { status: "started", bindingId: binding.id, agentId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await runtime.markAuditBlockerVerifierSpawnFailed(message);
-      return { status: "failed", bindingId: binding.id, error: message };
+      const failed = await runtime.markAuditBlockerVerifierSpawnFailed(message);
+      return { status: failed.auditBlockerVerifierJob?.status ?? "failed", bindingId: binding.id, error: message };
     }
   }
 
@@ -110,6 +145,7 @@ export class AuditRemediationOrchestrator {
   }
 
   async startPlanner(runtimeRoot: string, ctx: ExtensionContext) {
+    this.contexts.set(runtimeRoot, ctx);
     const runtime = new RuntimeService(runtimeRoot);
     const manifest = await runtime.store.readManifest();
     const config = await loadForgeConfig(manifest.controlRoot);
@@ -117,6 +153,9 @@ export class AuditRemediationOrchestrator {
     const model = await resolveExactModel(ctx, route.model);
     let state = await runtime.status();
     if (!state.remediationPlan?.plannerJob) state = await runtime.createRemediationPlannerJob({ model: route.model, thinking: route.thinking, maxTurns: route.maxTurns, configHash: route.configHash });
+    if (state.remediationPlan?.plannerJob?.status === "starting" && state.remediationPlan.plannerJob.binding && !state.remediationPlan.plannerJob.binding.agentId) {
+      state = await runtime.markRemediationPlannerSpawnFailed(state.remediationPlan.plannerJob.binding.id, "Agent lifecycle missing during recovery before Remediation Planner binding");
+    }
     const plan = state.remediationPlan!;
     const job = plan.plannerJob!;
     if (!["pending", "retry_ready", "interrupted"].includes(job.status)) return { status: job.status, bindingId: job.binding?.id, agentId: job.binding?.agentId };
@@ -124,12 +163,25 @@ export class AuditRemediationOrchestrator {
     await runtime.claimRemediationPlanner(binding);
     const location: PlannerLocation = { kind: "planner", runtimeRoot, bindingId: binding.id };
     this.bindings.set(binding.id, location);
-    this.models.set(`planner:${runtimeRoot}`, model);
     const verifier = state.auditBlockerVerifierJob;
-    const confirmed = plan.source === "slice_gate"
-      ? [{ findingId: plan.confirmedFindingIds[0]!, axis: "slice_gate", auditBindingId: "slice-gate", finding: { id: plan.confirmedFindingIds[0]!, severity: "blocker", message: state.sliceGates?.[plan.sourceSliceId!]?.error ?? "Slice Gate failed", evidence: state.sliceGates?.[plan.sourceSliceId!]?.verification?.map((result) => `${result.command} exited ${result.exitCode}`) ?? [], violatedRule: `Slice ${plan.sourceSliceId} Gate must pass`, verification: state.sliceGates?.[plan.sourceSliceId!]?.commands.map((command) => command.command).join("; ") ?? "Rerun Slice Gate" } }]
-      : verifier!.findings.filter((finding) => plan.confirmedFindingIds.includes(finding.findingId));
     const dag = await runtime.store.readDag();
+    const slicePaths = plan.source === "slice_gate" ? dag.tasks.filter((task) => task.sliceId === plan.sourceSliceId).flatMap((task) => task.writes) : [];
+    let confirmed;
+    if (plan.source === "slice_gate") {
+      confirmed = [{ findingId: plan.confirmedFindingIds[0]!, axis: "slice_gate", auditBindingId: "slice-gate", finding: { id: plan.confirmedFindingIds[0]!, severity: "blocker", message: state.sliceGates?.[plan.sourceSliceId!]?.error ?? "Slice Gate failed", evidence: state.sliceGates?.[plan.sourceSliceId!]?.verification?.map((result) => `${result.command} exited ${result.exitCode}`) ?? [], violatedRule: `Slice ${plan.sourceSliceId} Gate must pass`, verification: state.sliceGates?.[plan.sourceSliceId!]?.commands.map((command) => command.command).join("; ") ?? "Rerun Slice Gate", suggestedResolution: `Identify the smallest repository seam that makes Slice ${plan.sourceSliceId} Gate pass without expanding Slice scope` } }];
+    } else {
+      const result = verifier?.result;
+      if (!verifier || !result) throw new Error("Remediation Planner requires completed Blocker Verification evidence");
+      const review: AuditBlockerVerifierReview | undefined = "results" in result
+        ? result
+        : await runtime.store.readImmutableArtifact<AuditBlockerVerifierReview>(result.artifactPath);
+      if (!review) throw new Error("Remediation Planner cannot read the immutable Blocker Verification artifact");
+      const byId = new Map(review.results.filter((item) => item.status === "confirmed").map((item) => [item.findingId, item]));
+      confirmed = verifier.findings.filter((finding) => plan.confirmedFindingIds.includes(finding.findingId)).map((reference) => ({
+        ...reference,
+        finding: { ...reference.finding, evidence: [...new Set([...reference.finding.evidence, ...(byId.get(reference.findingId)?.evidence ?? [])])] },
+      }));
+    }
     const prompt = [
       "Role: Forge Remediation Task Planner",
       `Binding ID: ${binding.id}`,
@@ -143,8 +195,11 @@ export class AuditRemediationOrchestrator {
       `Completed Task Receipts: ${runtimeRoot}/receipts`,
       `Current DAG generation: ${dag.generation}`,
       `Next Task ID starts after: ${dag.tasks.at(-1)?.id ?? "none"}`,
+      ...(plan.source === "slice_gate" ? [`Completed Slice declared paths are candidate scope, not confirmed Finding evidence: ${slicePaths.join(", ") || "none"}`] : []),
       "",
       "Read the frozen PRD, Issue artifact/ISSUE.md, current DAG, completed Receipts, and confirmed Findings before planning. The PRD and Issue are authoritative constraints, not optional background.",
+      "Proportionality Policy:",
+      ...proportionalityPolicyLines("planning"),
       "If the repair would violate repository instructions, frozen PRD/Issue requirements, accepted Decisions, audit findings, Task/DAG contracts, Git/workspace rules, Issue scope/non-goals, architecture seam, or requires a product choice not determined by repository evidence, do not guess and do not submit Tasks. Call forge_run_human_decision_request with concrete evidence, 2-4 user options, consequences, and the correct resume action.",
       "Generate the smallest detailed Micro Tasks that repair only the confirmed final Audit Findings. Preserve all completed Tasks, commits and Receipts. Do not change frozen Acceptance, approved Decisions, architecture seam, public Interface, non-goals, or unrelated code. Fallback is forbidden unless frozen requirements explicitly authorize the exact behavior and verification. Keep app entry and composition-root Modules thin by placing cohesive behavior in its proven owner, but do not create one-function pass-through files merely to reduce file length.",
       "Each Task should normally read 1-2 exact symbols, write one primary path, contain an executable ordered Blueprint, and produce one useful verified commit. Name affected existing Slice IDs whose gates must rerun.",
@@ -153,18 +208,21 @@ export class AuditRemediationOrchestrator {
       "Call forge_run_remediation_propose exactly once with this Runtime root, Binding ID, complete Tasks, and rerunSliceIds. Do not modify files, then stop.",
     ].join("\n");
     try {
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({ type: "forge-designer", prompt, description: `forge-remediation-planner:${binding.id}`, model, thinkingLevel: binding.thinking, maxTurns: binding.maxTurns, cwd: manifest.workspaceRoot });
       await runtime.bindRemediationPlanner(binding.id, agentId);
       this.agents.set(agentId, location);
       return { status: "started", bindingId: binding.id, agentId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await runtime.markRemediationPlannerSpawnFailed(binding.id, message);
-      return { status: "failed", bindingId: binding.id, error: message };
+      const failed = await runtime.markRemediationPlannerSpawnFailed(binding.id, message);
+      return { status: failed.remediationPlan?.plannerJob?.status ?? "failed", bindingId: binding.id, error: message };
     }
   }
 
   async proposeRemediation(runtimeRoot: string, plannerBindingId: string, tasks: MicroTaskDraft[], rerunSliceIds: string[], ctx: ExtensionContext) {
+    this.contexts.set(runtimeRoot, ctx);
     const runtime = new RuntimeService(runtimeRoot);
     const stateBefore = await runtime.status();
     if (stateBefore.remediationPlan?.plannerJob?.binding?.id !== plannerBindingId || !["starting", "running"].includes(stateBefore.remediationPlan.plannerJob.status)) throw new Error("Inactive Remediation Planner Binding");
@@ -172,15 +230,33 @@ export class AuditRemediationOrchestrator {
     const proposed = await remediation.propose(tasks, rerunSliceIds);
     await runtime.markRemediationPlannerProposalSubmitted(plannerBindingId);
     const model = await resolveExactModel(ctx, proposed.route.model);
-    const state = proposed.state!;
-    if (state.status === "passed") {
-      const runtimeState = await remediation.applyPassed();
-      await this.notifyContinue(runtimeRoot);
-      return { status: "applied", dagGeneration: runtimeState.dagGeneration };
+    return this.startPreflight(runtimeRoot, ctx, model, proposed.state ?? undefined);
+  }
+
+  async resumePreflight(runtimeRoot: string, ctx: ExtensionContext) {
+    return this.startPreflight(runtimeRoot, ctx);
+  }
+
+  private async startPreflight(runtimeRoot: string, ctx: ExtensionContext, resolvedModel?: unknown, knownState?: TaskPreflightState) {
+    this.contexts.set(runtimeRoot, ctx);
+    const remediation = new RemediationService(runtimeRoot);
+    const runtimeState = await remediation.runtime.status();
+    const service = new TaskPreflightService(remediation.workItemRoot, runtimeState.issueId, "remediation");
+    let state = knownState ?? await service.status();
+    if (!state) throw new Error("Remediation Preflight does not exist");
+    if (state.status === "starting" && state.job.binding && !state.job.binding.agentId) {
+      state = await service.markSpawnFailed(state.job.binding.id, "Agent lifecycle missing during recovery before Remediation Preflight binding");
     }
-    if (!["pending", "retry_ready", "interrupted"].includes(state.status)) return { status: state.status, proposalGeneration: state.activeProposalGeneration };
-    const service = new TaskPreflightService(remediation.workItemRoot, (await remediation.runtime.status()).issueId, "remediation");
+    if (state.status === "passed") {
+      const applied = await remediation.applyPassed();
+      await this.notifyContinue(runtimeRoot);
+      return { status: "applied", dagGeneration: applied.dagGeneration };
+    }
+    if (!["pending", "retry_ready", "interrupted"].includes(state.status)) {
+      return { status: state.status, proposalGeneration: state.activeProposalGeneration };
+    }
     const proposal = await service.readProposal();
+    const model = resolvedModel ?? await resolveExactModel(ctx, state.job.model);
     const binding = TaskPreflightService.createBinding({
       proposalGeneration: state.activeProposalGeneration,
       proposalHash: state.proposalHash,
@@ -195,34 +271,18 @@ export class AuditRemediationOrchestrator {
     await service.claim(binding);
     const location: PreflightLocation = { kind: "preflight", runtimeRoot, workItemRoot: remediation.workItemRoot, issueId: proposal.issueId, bindingId: binding.id, proposalGeneration: proposal.generation };
     this.bindings.set(binding.id, location);
-    this.models.set(`preflight:${runtimeRoot}`, model);
-    const prompt = [
-      "Role: independent Forge Remediation Task Preflight Reviewer",
-      `Binding ID: ${binding.id}`,
-      `Runtime root: ${runtimeRoot}`,
-      `Proposal: ${service.root}/proposals/proposal-${proposal.generation}.json`,
-      `Proposal hash: ${proposal.proposalHash}`,
-      `Confirmed Finding hash: ${proposal.sourceFindingHash}`,
-      `Frozen PRD generation/hash: ${proposal.sourcePrdGeneration}/${proposal.sourcePrdHash}`,
-      `Frozen Issue hash: ${proposal.sourceIssueHash}`,
-      `Frozen Acceptance IDs: ${(proposal.acceptanceIds ?? []).join(", ")}`,
-      `Frozen Decision IDs: ${(proposal.decisionIds ?? []).join(", ")}`,
-      `Frozen PRD: ${remediation.workItemRoot}/PRD.md`,
-      `Frozen Issue: ${remediation.issueRoot}/ISSUE.md`,
-      "",
-      "Read the frozen PRD and Issue as authoritative constraints. Check that every repair Task is a small directly executable commit, reads only exact evidence seams, has a detailed Blueprint, stays within the confirmed Finding and Issue scope, preserves Acceptance/Decisions/non-goals, forbids unauthorized Fallback, keeps app/composition-root Modules thin without pass-through file fragmentation, and names focused verification and affected Slice Gates.",
-      "If the Proposal conflicts with repository instructions, frozen PRD/Issue requirements, accepted Decisions, audit requirements, Task/DAG contracts, Git/workspace safety rules, architecture/public Interface/scope, or exposes an unresolved product choice, request human input through forge_run_human_decision_request instead of merely suggesting an implementation. Otherwise block any Task that requires investigation, changes frozen Acceptance or architecture, combines independently committable repairs, or lacks direct Finding traceability.",
-      "Do not modify files. Call forge_run_remediation_preflight_submit exactly once, then stop.",
-    ].join("\n");
+    const prompt = remediationPreflightPrompt({ runtimeRoot, bindingId: binding.id, proposal, service, remediation });
     try {
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt, description: preflightDescription(binding.id, proposal.issueId, proposal.generation), model, thinkingLevel: binding.thinking, maxTurns: binding.maxTurns, cwd: proposal.source.repositoryRoot });
       await service.bindAgent(binding.id, agentId);
       this.agents.set(agentId, location);
       return { status: "started", proposalGeneration: proposal.generation, bindingId: binding.id, agentId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await service.markSpawnFailed(binding.id, message);
-      return { status: "failed", proposalGeneration: proposal.generation, bindingId: binding.id, error: message };
+      const failed = await service.markSpawnFailed(binding.id, message);
+      return { status: failed.status, proposalGeneration: proposal.generation, bindingId: binding.id, error: message };
     }
   }
 
@@ -325,27 +385,19 @@ export class AuditRemediationOrchestrator {
     void (async () => {
       const location = await this.locate(event);
       if (!location) return;
+      const ctx = this.contexts.get(location.runtimeRoot);
       if (location.kind === "verifier") {
-        const runtime = new RuntimeService(location.runtimeRoot);
-        const state = await runtime.markAuditBlockerVerifierTerminal(event.id, terminal, event.error);
+        const state = await new RuntimeService(location.runtimeRoot).markAuditBlockerVerifierTerminal(event.id, terminal, event.error);
         const job = state.auditBlockerVerifierJob;
-        if (!job || job.result || !["retry_ready", "interrupted"].includes(job.status) || job.attempt >= job.maxAttempts) return;
-        const model = this.models.get(`verifier:${location.runtimeRoot}`);
-        if (model) {
-          const manifest = await runtime.store.readManifest();
-          const binding = RuntimeService.createAuditBlockerVerifierBinding({ attempt: job.attempt + 1, findingHash: job.findingHash, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: state.generation });
-          await runtime.claimAuditBlockerVerifier(binding);
-          const nextLocation: VerifierLocation = { kind: "verifier", runtimeRoot: location.runtimeRoot, bindingId: binding.id };
-          this.bindings.set(binding.id, nextLocation);
-          const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt: `Retry final Audit Blocker verification. Runtime root: ${location.runtimeRoot}\nBinding ID: ${binding.id}\nCall forge_run_audit_blockers_verify exactly once.`, description: verifierDescription(binding.id), model, thinkingLevel: binding.thinking, maxTurns: binding.maxTurns, cwd: manifest.workspaceRoot });
-          await runtime.bindAuditBlockerVerifier(binding.id, agentId);
-          this.agents.set(agentId, nextLocation);
-        }
+        if (ctx && job && !job.result && ["retry_ready", "interrupted"].includes(job.status)) await this.startVerifier(location.runtimeRoot, ctx);
       } else if (location.kind === "planner") {
-        await new RuntimeService(location.runtimeRoot).markRemediationPlannerTerminal(event.id, terminal, event.error);
+        const state = await new RuntimeService(location.runtimeRoot).markRemediationPlannerTerminal(event.id, terminal, event.error);
+        const job = state.remediationPlan?.plannerJob;
+        if (ctx && job && ["retry_ready", "interrupted"].includes(job.status)) await this.startPlanner(location.runtimeRoot, ctx);
       } else {
         const service = new TaskPreflightService(location.workItemRoot, location.issueId, "remediation");
-        await service.markTerminal(event.id, terminal, event.error);
+        const state = await service.markTerminal(event.id, terminal, event.error);
+        if (ctx && ["retry_ready", "interrupted"].includes(state.status)) await this.resumePreflight(location.runtimeRoot, ctx);
       }
     })().catch((error) => console.error("[pi-forge-workflow] Audit Remediation terminal event failed", error));
   }

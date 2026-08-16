@@ -1,7 +1,8 @@
 import type { ModelProfile, ThinkingLevel } from "../runtime/types.js";
+import type { SubagentFailureRecord } from "../subagents/failures.js";
 import type { MicroTaskDraft, SliceDraft } from "./types.js";
 
-export type TaskPreflightJobStatus = "pending" | "starting" | "running" | "retry_ready" | "interrupted" | "passed" | "blocked" | "failed";
+export type TaskPreflightJobStatus = "pending" | "starting" | "running" | "retry_ready" | "interrupted" | "passed" | "blocked" | "failed" | "infrastructure_failed";
 export type TaskPreflightVerdict = "passed" | "blocked";
 
 export interface TaskPreflightFinding {
@@ -48,6 +49,9 @@ export interface TaskPreflightJob {
   status: TaskPreflightJobStatus;
   attempt: number;
   maxAttempts: number;
+  infrastructureAttempts?: number;
+  maxInfrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
   profile: string;
   model: string;
   thinking: ThinkingLevel;
@@ -132,5 +136,4 @@ export interface TaskPreflightReceipt {
   resultHash: string;
   verdict: "passed";
   approvedAt: string;
-  frozenTaskPlanHash?: string;
 }

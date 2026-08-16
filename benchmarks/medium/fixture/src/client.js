@@ -1,7 +1,10 @@
+import { createRequestPolicy } from "./request-policy.js";
+
 export function createClient(config) {
+  const policy = createRequestPolicy(config);
   return {
     describeRequest(path) {
-      return { path, retries: config.retries };
+      return policy.describe(path);
     },
   };
 }

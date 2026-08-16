@@ -16,7 +16,7 @@ interface SpawnResult {
   jobId: string;
   bindingId?: string;
   agentId?: string;
-  status: "started" | "failed";
+  status: "started" | "retry_ready" | "failed" | "infrastructure_failed";
   error?: string;
 }
 
@@ -88,16 +88,12 @@ export class PrdReviewOrchestrator {
     if (config.review.blockerVerification.requireDifferentModel && reviewModels.has(verifier.model)) {
       throw new Error(`Blocker Verifier model ${verifier.model} must differ from PRD Reviewer models; rerun /skill:forge-init`);
     }
-    const protocol = await this.adapter.ping();
-    if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
   }
 
   async startRequiredReviews(workItemRoot: string, ctx: ExtensionContext): Promise<SpawnResult[]> {
     const service = new WorkItemService(workItemRoot);
     const manifest = await service.store.readManifest();
     const config = await loadForgeConfig(manifest.controlRoot);
-    const protocol = await this.adapter.ping();
-    if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
     const verifierRoute = resolveForgeProfile(config, "blockerVerifier");
     const verifierModel = await resolveExactModel(ctx, verifierRoute.model);
     this.verifierByWorkItem.set(workItemRoot, { model: verifierModel, route: verifierRoute });
@@ -105,6 +101,12 @@ export class PrdReviewOrchestrator {
     let state = await service.store.readState();
     const prd = state.currentPrd;
     if (!prd) throw new Error("No PRD has been submitted");
+    for (const job of Object.values(state.reviewJobs ?? {}).filter((candidate) => candidate.prdGeneration === prd.generation)) {
+      if (job.status === "starting" && job.binding && !job.binding.agentId) {
+        await service.markReviewSpawnFailed(job.id, "Agent lifecycle missing during recovery before PRD Review binding");
+        state = await service.store.readState();
+      }
+    }
     const currentJobs = Object.values(state.reviewJobs ?? {}).filter((job) => job.prdGeneration === prd.generation);
     if (currentJobs.length === 0) {
       const plans: PrdReviewJobPlan[] = [];
@@ -146,7 +148,23 @@ export class PrdReviewOrchestrator {
   }
 
   async resumeReviews(workItemRoot: string, ctx: ExtensionContext, reason: string): Promise<{ reviews: SpawnResult[]; blocker?: SpawnResult }> {
-    await new WorkItemService(workItemRoot).recoverInterruptedReviewCoordination(reason);
+    const service = new WorkItemService(workItemRoot);
+    const before = await service.store.readState();
+    const activeAgentIds = [
+      ...Object.values(before.reviewJobs ?? {}).flatMap((job) => job.binding?.agentId && ["starting", "running"].includes(job.status) ? [job.binding.agentId] : []),
+      ...(before.blockerVerificationJob?.binding?.agentId && ["starting", "running"].includes(before.blockerVerificationJob.status) ? [before.blockerVerificationJob.binding.agentId] : []),
+    ];
+    const stoppedAgentIds: string[] = [];
+    for (const agentId of activeAgentIds) {
+      try {
+        await this.adapter.stop(agentId);
+        stoppedAgentIds.push(agentId);
+      } catch (error) {
+        if (/agent not found/i.test(error instanceof Error ? error.message : String(error))) stoppedAgentIds.push(agentId);
+        else throw error;
+      }
+    }
+    await service.recoverInterruptedReviewCoordination(reason, stoppedAgentIds);
     const reviews = await this.startRequiredReviews(workItemRoot, ctx);
     const blocker = await this.startCachedBlockerVerification(workItemRoot);
     return { reviews, ...(blocker ? { blocker } : {}) };
@@ -216,6 +234,8 @@ export class PrdReviewOrchestrator {
     });
 
     try {
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({
         type: "forge-reviewer",
         prompt,
@@ -230,13 +250,14 @@ export class PrdReviewOrchestrator {
       return { jobId, bindingId: binding.id, agentId, status: "started" };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await service.markReviewSpawnFailed(job.id, message);
-      return { jobId, bindingId: binding.id, status: "failed", error: message };
+      const failed = await service.markReviewSpawnFailed(job.id, message);
+      const status = failed.reviewJobs?.[job.id]?.status;
+      return { jobId, bindingId: binding.id, status: status === "retry_ready" || status === "infrastructure_failed" ? status : "failed", error: message };
     }
   }
 
   private async startCachedBlockerVerification(workItemRoot: string): Promise<SpawnResult | undefined> {
-    if (this.blockerStarting.has(workItemRoot)) return undefined;
+    while (this.blockerStarting.has(workItemRoot)) await new Promise((resolve) => setTimeout(resolve, 5));
     const cached = this.verifierByWorkItem.get(workItemRoot);
     if (!cached) return undefined;
     this.blockerStarting.add(workItemRoot);
@@ -258,10 +279,14 @@ export class PrdReviewOrchestrator {
           configHash: cached.route.configHash,
         });
       }
-      const job = state.blockerVerificationJob;
+      let job = state.blockerVerificationJob;
+      if (job?.status === "starting" && job.binding && !job.binding.agentId) {
+        state = await service.markBlockerVerifierSpawnFailed("Agent lifecycle missing during recovery before PRD Blocker Verifier binding");
+        job = state.blockerVerificationJob;
+      }
       if (!job || !["pending", "retry_ready", "interrupted"].includes(job.status)) return undefined;
       this.modelByJob.set(`${workItemRoot}:${job.id}`, cached.model);
-      return this.spawnBlockerJob(workItemRoot, cached.model);
+      return await this.spawnBlockerJob(workItemRoot, cached.model);
     } finally {
       this.blockerStarting.delete(workItemRoot);
     }
@@ -299,6 +324,8 @@ export class PrdReviewOrchestrator {
       findings: job.findings.map((item) => item.finding),
     });
     try {
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({
         type: "forge-reviewer",
         prompt,
@@ -313,8 +340,9 @@ export class PrdReviewOrchestrator {
       return { jobId: job.id, bindingId: binding.id, agentId, status: "started" };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await service.markBlockerVerifierSpawnFailed(message);
-      return { jobId: job.id, bindingId: binding.id, status: "failed", error: message };
+      const failed = await service.markBlockerVerifierSpawnFailed(message);
+      const status = failed.blockerVerificationJob?.status;
+      return { jobId: job.id, bindingId: binding.id, status: status === "retry_ready" || status === "infrastructure_failed" ? status : "failed", error: message };
     }
   }
 
@@ -355,13 +383,13 @@ export class PrdReviewOrchestrator {
           await this.startCachedBlockerVerification(location.workItemRoot);
           return;
         }
-        if (!["retry_ready", "interrupted"].includes(job.status) || job.attempt >= job.maxAttempts) return;
+        if (!["retry_ready", "interrupted"].includes(job.status)) return;
         const model = this.modelByJob.get(`${location.workItemRoot}:${job.id}`);
         if (model) await this.spawnJob(location.workItemRoot, job.id, model);
       } else {
         const state = await service.markBlockerVerifierTerminal(event.id, terminal, event.error);
         const job = state.blockerVerificationJob;
-        if (!job || !["retry_ready", "interrupted"].includes(job.status) || job.attempt >= job.maxAttempts) return;
+        if (!job || !["retry_ready", "interrupted"].includes(job.status)) return;
         const model = this.modelByJob.get(`${location.workItemRoot}:${job.id}`);
         if (model) await this.spawnBlockerJob(location.workItemRoot, model);
       }

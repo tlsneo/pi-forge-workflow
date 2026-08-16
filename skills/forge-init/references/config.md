@@ -61,12 +61,12 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
   },
   "agents": {
     "directory": ".pi/agents",
-    "templateVersion": 3
+    "templateVersion": 4
   },
   "instructions": {
     "file": "AGENTS.md",
     "managedSection": "forge-workflow",
-    "templateVersion": 1
+    "templateVersion": 2
   },
   "repositoryContext": {
     "mode": "single-context",

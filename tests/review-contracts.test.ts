@@ -56,6 +56,8 @@ describe("PRD review contracts", () => {
     expect(prompt).toContain("Binding ID: binding-1");
     expect(prompt).toContain("Review surface hash: surface-hash");
     expect(prompt).toContain("Out of scope:");
+    expect(prompt).toContain("Proportionality Policy");
+    expect(prompt).toContain("Passing with no findings is valid");
     expect(prompt).toContain("Submit exactly one structured forge_prd_review");
   });
 
@@ -74,10 +76,12 @@ describe("PRD review contracts", () => {
         evidence: ["src/client.ts#createClient"],
         violatedRule: "Design requires an existing seam",
         verification: "Read createClient",
+        suggestedResolution: "Name the smallest existing createClient seam",
       }],
     });
     expect(prompt).toContain("Verify only these Blockers");
     expect(prompt).toContain("Do not run a general fourth review");
+    expect(prompt).toContain("reachable, contract-bound failure");
     expect(prompt).toContain("F-ARCH-001");
   });
 
@@ -101,7 +105,7 @@ describe("PRD review contracts", () => {
       reviewerId: "reviewer-1",
       submittedAt: new Date().toISOString(),
       findings: [
-        { id: "F-COV-001", severity: "blocker", message: "Missing error path", evidence: ["PRD#Behavior"], violatedRule: "Error paths must be explicit", verification: "Read PRD Behavior" },
+        { id: "F-COV-001", severity: "blocker", message: "Missing error path", evidence: ["PRD#Behavior"], violatedRule: "Error paths must be explicit", verification: "Read PRD Behavior", suggestedResolution: "Add only the missing reachable error path" },
         { id: "F-COV-001", severity: "warning", message: "Duplicate id", evidence: [], violatedRule: "IDs are unique", verification: "Compare findings" },
       ],
     };

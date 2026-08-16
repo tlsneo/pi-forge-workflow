@@ -49,8 +49,8 @@ it("adds remediation as a new immutable DAG generation", async () => {
     };
     state.remediationPlan = {
       id: "remediation-1",
-      source: "audit",
-      sourceAuditGeneration: 1,
+      source: "slice_gate",
+      sourceSliceId: "S01",
       findingHash: "finding-hash",
       confirmedFindingIds: ["F-1"],
       status: "ready",
@@ -72,7 +72,8 @@ it("adds remediation as a new immutable DAG generation", async () => {
   expect(next.tasks.T01?.status).toBe("completed");
   expect(next.tasks.T02?.status).toBe("completed");
   expect(next.sliceGates?.S01?.status).toBe("pending");
-  expect(next.auditJobs).toBeUndefined();
+  expect(next.auditJobs?.standards.id).toBe("old-standards");
+  expect(next.auditInvalidatedAxes).toEqual(["standards", "acceptance_integration", "architecture_minimality"]);
   expect(next.remediationPlan?.status).toBe("applied");
   expect((await service.store.readDag()).generation).toBe(2);
   expect((await service.store.readEvents()).at(-1)?.type).toBe("dag_amended");

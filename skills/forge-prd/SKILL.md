@@ -31,7 +31,7 @@ Extract from the conversation and evidence:
 - user decisions still open;
 - facts held by an external stakeholder.
 
-Use the `grilling` protocol for open user decisions: dependencies form a decision tree, the frontier contains every question whose prerequisites are settled, each round asks the whole frontier, and every question includes a recommended answer. Until Forge-controlled Research Jobs are implemented, find repository facts with the parent session's read-only tools. Do not call generic `Agent`, `Explore`, or `Plan`; they bypass Forge model routing, Bindings, and evidence receipts. Use an external questionnaire only for facts unavailable to both repository and user.
+Use the `grilling` protocol for open user decisions: dependencies form a decision tree, the frontier contains every question whose prerequisites are settled, each round asks the whole frontier, and every question includes a recommended answer. Until Forge-controlled Research Jobs are implemented, find repository facts with the parent session's read-only tools or `forge_explore_repository`. Do not call generic `Agent`, `Explore`, or `Plan`; they bypass Forge model routing, Bindings, and evidence receipts. While a Work Item is active this is mechanically enforced by the ordinary-Agent Tool Guard. Use an external questionnaire only for facts unavailable to both repository and user.
 
 After each round, call `forge_prd_checkpoint` with the complete decision tree, evidence set, and concise discovery summary.
 
@@ -40,6 +40,8 @@ Completion criterion: every decision is answered or explicitly external; externa
 ## 3. Select the minimum sufficient design
 
 Use the mapped data flow to choose the existing Seam and owning Module. Keep app entry points and Composition Roots limited to dependency wiring and orchestration; place cohesive behavior in its existing owner. Split by stable responsibility, not file length, and do not create pass-through Modules merely to make files smaller. Fallback is default-deny: compatibility paths, default substitution, silent recovery, catch-and-continue behavior, and swallowed errors require explicit frozen behavior plus verification.
+
+Apply the managed Proportionality Policy while comparing viable locations. Every proposed guard, compatibility path, abstraction, dependency, artifact, version, check, and delivery step must trace to frozen behavior, a documented repository rule, or a failure reachable through supported use. Each proposed check must settle a live uncertainty or verify a frozen obligation, and its failure must change the next action. Explicitly required security, migration, compatibility, verification, review, and mechanical integrity work remains required.
 
 Compare viable locations directly against repository evidence. Prefer the design that satisfies Acceptance while introducing the fewest new concepts, Interfaces, dependencies, branches, and modified paths. Record the selected location and materially plausible rejected alternatives in PRD Decisions. If surviving alternatives change user behavior, Scope, public Interface, compatibility, migration, security, or long-lived Module ownership, put that choice in the user Decision Frontier. Do not create a separate Design artifact or simulate a multi-agent tournament.
 
@@ -72,7 +74,7 @@ Review axes:
 - Evidence: repository claims, consumers, and test seams;
 - Architecture: selected seam, minimality, compatibility, and rollback.
 
-Each Reviewer submits exactly once through `forge_prd_review` using its Binding ID. Runtime rejects stale Generation, Axis, Surface Hash, duplicate, or manual-bypass submissions. `Agent completed` without a structured submission becomes `interrupted`; normal in-session recovery creates a fresh Binding. After an explicit coordinator restart, use `forge_prd_resume_reviews` with a takeover reason.
+Each Reviewer submits exactly once through `forge_prd_review` using its Binding ID. Runtime rejects stale Generation, Axis, Surface Hash, duplicate, or manual-bypass submissions. A Blocker must identify an exact frozen-contract or documented hard-rule violation, a reachable failure, action-changing verification, and the smallest sufficient resolution. Optional confidence, future flexibility, personal preference, and duplicate review of settled evidence are not Blockers; a passed review with no Findings is valid. `Agent completed` without a structured submission becomes `interrupted`; recognizable service, RPC, transport, or missing pre-bind lifecycle failures use a separate bounded Infrastructure Retry and do not consume semantic Review attempts. After an explicit coordinator restart, use `forge_prd_resume_reviews` with a takeover reason.
 
 When all axes finish, reported Blockers automatically start a different-Binding Blocker Verifier following the [Blocker verification contract](references/blocker-verification.md). Confirmed Blockers block Amendment; rejected Blockers retain the immutable original Review but allow the gate to proceed; missing evidence enters `needs_external_input`.
 

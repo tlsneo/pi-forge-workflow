@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { TaskPreflightProposal } from "./preflight-types.js";
 import { minimalImplementationPolicyLines } from "../policy/minimal-implementation.js";
+import { proportionalityPolicyLines } from "../policy/proportionality.js";
 
 export function buildTaskPreflightPrompt(input: {
   workItemRoot: string;
@@ -28,13 +29,16 @@ export function buildTaskPreflightPrompt(input: {
     "Required policy:",
     "- One Task is one behavior-complete, directly executable, normally committable result. Put detailed implementation steps inside the Blueprint instead of creating a Runtime Task for each micro-step.",
     "- Split only when results can be independently implemented, verified, committed, rolled back, and consumed. Task count is not a quality metric.",
-    "- A Task normally has one to three exact Reads and up to three inseparable Writes, including focused tests or build registration required to prove the behavior.",
+    "- A Task normally has one to three exact Reads and Writes. Four or five are valid only when they are mechanically inseparable parts of one behavior-complete result, including focused tests or build registration; six or more is invalid. Do not split one observable contract merely to satisfy the normal budget.",
     "- Every Blueprint step must have a contiguous BP-xx ID, one exact instruction, and explicit Expected Evidence.",
     "- The Blueprint must name the exact edit or insertion point, existing symbols to reuse, value flow, changed condition, unchanged branches, focused assertion or verification, and forbidden adjacent scope.",
     "- For every test-file Write, require the exact import or fixture seam, insertion point, test name, input, expected output or exact error assertion, and existing test that remains unchanged; category-only test coverage is a Blocker.",
     "- Expected Patch Shape must describe every intended changed surface. Forbidden Changes and Stop Conditions must remove Worker discretion and require fail-closed behavior on contract mismatch.",
     "- A Worker must not need to search for callers, choose among designs, invent error semantics, infer a test seam, or reopen the Issue/PRD.",
     ...minimalImplementationPolicyLines(),
+    "",
+    "Proportionality Policy:",
+    ...proportionalityPolicyLines("review"),
     "",
     "Review procedure:",
     "1. Read the Proposal and Issue artifact.",
@@ -47,7 +51,7 @@ export function buildTaskPreflightPrompt(input: {
     "Blocker threshold:",
     "- Use Blocker when a Worker would need investigation or design, the Task combines independently deliverable behaviors, Reads omit required context, Blueprint step IDs or Evidence are incomplete, Expected Patch Shape is ambiguous, Stop Conditions do not fail closed, Blueprint leaves behavior to inference, adds an unauthorized Fallback, accumulates cohesive behavior in an app/composition-root file despite a proven owner, creates pass-through file fragmentation, or the verification cannot prove the promised artifact.",
     "- Use Warning for a concrete improvement that does not prevent direct execution.",
-    "- Do not block only because a different style or architecture is preferred.",
+    "- Do not block only because a different style or architecture is preferred, optional confidence could be increased, or a theoretically constructible unsupported input could receive extra defense.",
     "",
     "For every finding, identify one Task ID and cite concrete Proposal fields or repository path#symbol evidence. suggestedResolution must state how to split or what exact Blueprint information is missing.",
     "Do not modify files. Do not freeze Tasks. Do not call ordinary Agent, Explore, or Plan.",

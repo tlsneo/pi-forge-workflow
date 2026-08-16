@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -52,7 +52,7 @@ describe("AuditRemediationOrchestrator", () => {
     bus.on("subagents:rpc:spawn", (request) => bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: false, error: "spawn unavailable" }));
     const orchestrator = new AuditRemediationOrchestrator(new PiSubagentsAdapter(bus, 100));
     const result = await orchestrator.startPlanner(runtimeRoot, context(repositoryRoot));
-    expect(result.status).toBe("failed");
+    expect(result.status).toBe("retry_ready");
     expect((await runtime.status()).remediationPlan?.plannerJob?.status).toBe("retry_ready");
   });
 
@@ -80,7 +80,11 @@ describe("AuditRemediationOrchestrator", () => {
     await runtime.store.transact("test_blocked", (state) => {
       state.issueStatus = "blocked";
       state.auditGeneration = 1;
-      state.audits = { architecture_minimality: { axis: "architecture_minimality", verdict: "blocked", bindingId: "audit-binding", submittedAt: new Date().toISOString(), findings: [{ id: "ARCH-1", severity: "blocker", message: "Shared state mutation", evidence: ["src/config.ts#AppConfig"], violatedRule: "Mutation must be local", verification: "Read AppConfig", suggestedResolution: "Use a local value" }] } };
+      state.audits = {
+        standards: { axis: "standards", verdict: "passed", bindingId: "standards-binding", submittedAt: new Date().toISOString(), findings: [] },
+        acceptance_integration: { axis: "acceptance_integration", verdict: "passed", bindingId: "acceptance-binding", submittedAt: new Date().toISOString(), findings: [] },
+        architecture_minimality: { axis: "architecture_minimality", verdict: "blocked", bindingId: "audit-binding", submittedAt: new Date().toISOString(), findings: [{ id: "ARCH-1", severity: "blocker", message: "Shared state mutation", evidence: ["src/config.ts#AppConfig"], violatedRule: "Mutation must be local", verification: "Read AppConfig", suggestedResolution: "Use a local value" }] },
+      };
     });
 
     const bus = new FakeBus();
@@ -97,9 +101,15 @@ describe("AuditRemediationOrchestrator", () => {
     const result = await orchestrator.submitVerification(runtimeRoot, verifierState.auditBlockerVerifierJob!.binding!.id, [{ findingId: "ARCH-1", status: "confirmed", evidence: ["src/config.ts#AppConfig"], rationale: "The final code mutates shared state", missingEvidence: [] }], context(repositoryRoot));
     expect(result.remediationRequired).toBe(true);
     expect(result.planner?.status).toBe("started");
+    const verificationReference = (await runtime.status()).auditBlockerVerifierJob!.result!;
+    expect(verificationReference).not.toHaveProperty("results");
+    const verificationArtifact = JSON.parse(await readFile(join(runtimeRoot, verificationReference.artifactPath!), "utf8"));
+    expect(verificationArtifact.results).toHaveLength(1);
     expect(spawns[1].type).toBe("forge-designer");
     expect(spawns[1].prompt).toContain("Frozen PRD:");
     expect(spawns[1].prompt).toContain("Frozen Issue:");
+    expect(spawns[1].prompt).toContain("Proportionality Policy");
+    expect(spawns[1].prompt).toContain("live uncertainty");
     expect((await runtime.status()).remediationPlan?.plannerJob?.binding?.agentId).toBe("agent-2");
   });
 });

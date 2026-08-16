@@ -28,7 +28,7 @@ function context(root: string): ExtensionContext {
 }
 
 describe("TaskConformanceOrchestrator", () => {
-  it("spawns exactly one Binding-bound read-only Task Conformance Auditor and recovers an unbound spawn claim", async () => {
+  it("spawns exactly one Binding-bound read-only Task Conformance Auditor", async () => {
     const repositoryRoot = await mkdtemp(join(tmpdir(), "pi-forge-task-conformance-"));
     roots.push(repositoryRoot);
     await mkdir(join(repositoryRoot, "src"), { recursive: true });
@@ -66,10 +66,6 @@ describe("TaskConformanceOrchestrator", () => {
     const prepared = await new TaskExecutionService(runtimeRoot).finalizeTask("T001");
     expect(prepared.reviewPending).toBe(true);
     expect(git(repositoryRoot, "rev-parse", "HEAD")).toBe(baseline);
-    const pendingJob = (await runtime.status()).tasks.T001!.conformanceJob!;
-    const orphanBinding = RuntimeService.createTaskConformanceBinding({ workItemId: "work-item-test", issueId: "I001", taskId: "T001", taskVersion: 1, contractHash: contract.contractHash, surfaceHash: pendingJob.surface.surfaceHash, attempt: 1, model: pendingJob.model, thinking: pendingJob.thinking, maxTurns: pendingJob.maxTurns, startedGeneration: (await runtime.status()).generation });
-    await runtime.claimTaskConformance("T001", orphanBinding);
-
     const bus = new FakeBus();
     const spawns: any[] = [];
     bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
@@ -82,6 +78,8 @@ describe("TaskConformanceOrchestrator", () => {
     expect((await runtime.status()).tasks.T001?.conformanceJob?.surface).toMatchObject({ workItemId: "work-item-test", issueId: "I001", taskId: "T001" });
     expect(spawns[0].prompt).toContain("forge_run_task_conformance_submit");
     expect(spawns[0].prompt).toContain("every BP-xx Step");
-    expect((await runtime.status()).tasks.T001).toMatchObject({ status: "reviewing", conformanceJob: { status: "starting", attempt: 2, binding: { agentId: "auditor-1" } } });
+    expect(spawns[0].prompt).toContain("Proportionality Policy");
+    expect(spawns[0].prompt).toContain("Passing with no findings is valid");
+    expect((await runtime.status()).tasks.T001).toMatchObject({ status: "reviewing", conformanceJob: { status: "starting", attempt: 1, binding: { agentId: "auditor-1" } } });
   });
 });

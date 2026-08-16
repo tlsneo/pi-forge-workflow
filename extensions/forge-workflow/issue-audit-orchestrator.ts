@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadForgeConfig, resolveForgeProfile } from "../../src/config/resolver.js";
 import { TaskExecutionService } from "../../src/execution/service.js";
+import { proportionalityPolicyLines } from "../../src/policy/proportionality.js";
 import { RuntimeService } from "../../src/runtime/service.js";
 import type { IssueAuditAxis, IssueAuditJob } from "../../src/runtime/types.js";
 import { PiSubagentsAdapter, type SubagentLifecycleEvent } from "../../src/subagents/adapter.js";
@@ -46,7 +47,8 @@ async function resolveExactModel(ctx: ExtensionContext, input: string): Promise<
   return model;
 }
 
-function prompt(runtimeRoot: string, axis: IssueAuditAxis, bindingId: string, controlRoot: string, workspaceRoot: string): string {
+function prompt(runtimeRoot: string, job: IssueAuditJob, bindingId: string, controlRoot: string, workspaceRoot: string): string {
+  const axis = job.axis;
   const contract = CONTRACTS[axis];
   const issueRoot = dirname(runtimeRoot);
   return [
@@ -55,10 +57,17 @@ function prompt(runtimeRoot: string, axis: IssueAuditAxis, bindingId: string, co
     `Runtime root: ${runtimeRoot}`,
     `Control root: ${controlRoot}`,
     `Target repository root: ${workspaceRoot}`,
-    `Issue artifact: ${join(issueRoot, "ISSUE.md")}`,
-    `Task manifest: ${join(issueRoot, "task-manifest.json")}`,
-    `Task receipts: ${join(runtimeRoot, "receipts")}`,
-    `Slice gate state: ${join(runtimeRoot, "state.json")}`,
+    `Issue artifact: ${join(issueRoot, "issue.json")}`,
+    ...(job.surface ? [
+      `Compact Axis Surface: ${join(runtimeRoot, job.surface.artifactPath)}`,
+      `Axis Surface Hash: ${job.surface.surfaceHash}`,
+      `Surface Task IDs: ${job.surface.taskIds.join(", ") || "none"}`,
+      `Surface Changed Files: ${job.surface.changedFiles.join(", ") || "none"}`,
+    ] : [
+      `Task manifest: ${join(issueRoot, "task-manifest.json")}`,
+      `Task receipts: ${join(runtimeRoot, "receipts")}`,
+      `Slice gate state: ${join(runtimeRoot, "state.json")}`,
+    ]),
     "",
     `Audit question: ${contract.question}`,
     "Required checks:",
@@ -66,9 +75,12 @@ function prompt(runtimeRoot: string, axis: IssueAuditAxis, bindingId: string, co
     "Out of scope:",
     ...contract.outOfScope.map((item) => `- ${item}`),
     "",
-    "Read the final committed diff and only the evidence necessary for this axis. Do not modify files or expand scope.",
-    "A Blocker must make frozen Acceptance false, violate a documented hard rule, or prove the implementation structurally unsafe. Preferences are Warnings or Notes.",
-    "Call forge_run_audit_submit exactly once with this Binding ID, axis, verdict, and structured findings, then stop.",
+    "Proportionality Policy:",
+    ...proportionalityPolicyLines("review"),
+    "",
+    "Read the compact Axis Surface and inspect only its declared Task commits, changed files, and evidence necessary for this axis. Do not modify files, duplicate another axis, re-check settled evidence outside this surface, or expand scope.",
+    `Finding IDs must use this Axis prefix: ${axis === "standards" ? "STD-" : axis === "acceptance_integration" ? "ACC-" : "ARCH-"}. A Blocker must make frozen Acceptance false, violate a documented hard rule, or prove the implementation structurally unsafe through a reachable path. Its evidence must include at least one exact repository path, path#line citation, or path#symbol Seam that a bounded repair Task can read. Preferences and optional confidence are Warnings or Notes.`,
+    `Call forge_run_audit_submit exactly once with this Binding ID, axis${job.surface ? ", Axis Surface Hash" : ""}, verdict, and structured findings, then stop.`,
   ].join("\n");
 }
 
@@ -105,9 +117,16 @@ export class IssueAuditOrchestrator {
     const config = await loadForgeConfig(manifest.controlRoot);
     const route = resolveForgeProfile(config, "issueAudit");
     const model = await resolveExactModel(ctx, route.model);
-    const protocol = await this.adapter.ping();
-    if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
     let state = await service.status();
+    for (const [axis, job] of Object.entries(state.auditJobs ?? {}) as Array<[IssueAuditAxis, IssueAuditJob]>) {
+      if (job.status === "starting" && job.binding && !job.binding.agentId) {
+        await service.markAuditSpawnFailed(axis, "Agent lifecycle missing during recovery before Issue Audit binding");
+        state = await service.status();
+      }
+    }
+    if (state.issueStatus === "infrastructure_failed") {
+      return AXES.map((axis) => ({ axis, status: state.auditJobs?.[axis]?.status ?? "infrastructure_failed" }));
+    }
     if (!state.auditJobs || Object.values(state.auditJobs).every((job) => ["result_submitted", "completed", "failed"].includes(job.status))) {
       state = await service.createAuditJobs({
         standards: { model: route.model, thinking: route.thinking, maxTurns: route.maxTurns, configHash: route.configHash },
@@ -138,19 +157,21 @@ export class IssueAuditOrchestrator {
     const service = new RuntimeService(runtimeRoot);
     const state = await service.status();
     const manifest = await service.store.readManifest();
-    const binding = RuntimeService.createAuditBinding({ axis: job.axis, attempt: job.attempt + 1, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: state.generation });
+    const binding = RuntimeService.createAuditBinding({ axis: job.axis, ...(job.surface ? { surfaceHash: job.surface.surfaceHash } : {}), attempt: job.attempt + 1, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: state.generation });
     await service.claimAuditJob(job.axis, binding);
     const location = { runtimeRoot, axis: job.axis, bindingId: binding.id };
     this.bindings.set(binding.id, location);
     try {
-      const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt: prompt(runtimeRoot, job.axis, binding.id, manifest.controlRoot, manifest.workspaceRoot), description: description(binding.id, job.axis), model, thinkingLevel: job.thinking, maxTurns: job.maxTurns, cwd: manifest.workspaceRoot });
+      const protocol = await this.adapter.ping();
+      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+      const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt: prompt(runtimeRoot, job, binding.id, manifest.controlRoot, manifest.workspaceRoot), description: description(binding.id, job.axis), model, thinkingLevel: job.thinking, maxTurns: job.maxTurns, cwd: manifest.workspaceRoot });
       await service.bindAuditAgent(job.axis, binding.id, agentId);
       this.agents.set(agentId, location);
       return { axis: job.axis, agentId, status: "started" };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await service.markAuditSpawnFailed(job.axis, message);
-      return { axis: job.axis, status: "failed", error: message };
+      const failed = await service.markAuditSpawnFailed(job.axis, message);
+      return { axis: job.axis, status: failed.auditJobs?.[job.axis]?.status ?? "failed", error: message };
     }
   }
 
@@ -180,7 +201,7 @@ export class IssueAuditOrchestrator {
       const service = new RuntimeService(location.runtimeRoot);
       const state = await service.markAuditAgentTerminal(event.id, terminal, event.error);
       const job = state.auditJobs?.[location.axis];
-      if (!job || job.result || !["retry_ready", "interrupted"].includes(job.status) || job.attempt >= job.maxAttempts) return;
+      if (!job || job.result || !["retry_ready", "interrupted"].includes(job.status)) return;
       const model = this.models.get(`${location.runtimeRoot}:${location.axis}`);
       if (model) await this.spawn(location.runtimeRoot, job, model);
     })().catch((error) => console.error("[pi-forge-workflow] Issue Auditor terminal event failed", error));

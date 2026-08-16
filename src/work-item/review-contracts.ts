@@ -80,7 +80,7 @@ export const REVIEW_CONTRACTS: Record<ReviewAxis, ReviewContract> = {
       "Public Interface, migration, compatibility, or security policy remains undecided",
       "The design introduces an unauthorized Fallback or silent recovery path",
       "Cohesive behavior is accumulated in an app/composition-root Module despite a proven owner, or fragmented into pass-through Modules without depth",
-      "A clearly simpler sufficient alternative exists",
+      "The selected design adds a concrete unauthorized Interface, dependency, fallback, artifact, or abstraction that the frozen outcome does not consume, and the cited smaller resolution removes only that violation",
     ],
   },
 };

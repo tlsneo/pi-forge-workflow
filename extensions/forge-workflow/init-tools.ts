@@ -173,8 +173,8 @@ async function scanRepository(pi: ExtensionAPI, ctx: ExtensionContext, adapter: 
       blockerVerification: { profile: "verifier", requireDifferentModel: true },
     },
     commands,
-    agents: { directory: await pathExists(join(controlRoot, ".agents", "agents")) ? ".agents/agents" : ".pi/agents", templateVersion: 3 },
-    instructions: { file: instructionSelection.selectedFile, managedSection: "forge-workflow", templateVersion: 1 },
+    agents: { directory: await pathExists(join(controlRoot, ".agents", "agents")) ? ".agents/agents" : ".pi/agents", templateVersion: 4 },
+    instructions: { file: instructionSelection.selectedFile, managedSection: "forge-workflow", templateVersion: 2 },
     repositoryContext: discoveredRepositoryContext,
   };
 

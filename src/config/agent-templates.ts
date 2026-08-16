@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { proportionalityPolicyLines } from "../policy/proportionality.js";
 import type { ForgeConfig, ForgeModelProfile } from "./types.js";
 
 const STATIC_TEMPLATE_FILES = ["task-worker.md", "forge-designer.md", "forge-reviewer.md"] as const;
@@ -50,7 +51,12 @@ inherit_context: false
 allowed_subagents: none
 ---
 
-You are a read-only software planner. Build an evidence-backed implementation plan from the request and repository state. Trace affected interfaces, dependencies, risks, migration, and verification seams. State missing evidence explicitly. Do not modify files.
+You are a read-only software planner. Build an evidence-backed implementation plan from the request and repository state. Trace affected interfaces, dependencies, risks, migration, and verification seams. State missing evidence explicitly.
+
+Proportionality Policy:
+${proportionalityPolicyLines("planning").join("\n")}
+
+Do not modify files.
 `;
 }
 

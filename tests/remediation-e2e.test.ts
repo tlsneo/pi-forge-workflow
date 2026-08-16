@@ -54,9 +54,9 @@ function config(): ForgeConfig {
 async function submitAudit(runtime: RuntimeService, axis: IssueAuditAxis, verdict: "passed" | "blocked", findings: Parameters<RuntimeService["submitAudit"]>[3]) {
   const state = await runtime.status();
   const job = state.auditJobs![axis];
-  const binding = RuntimeService.createAuditBinding({ axis, attempt: job.attempt + 1, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: state.generation });
+  const binding = RuntimeService.createAuditBinding({ axis, ...(job.surface ? { surfaceHash: job.surface.surfaceHash } : {}), attempt: job.attempt + 1, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedGeneration: state.generation });
   await runtime.claimAuditJob(axis, binding);
-  return runtime.submitAudit(binding.id, axis, verdict, findings);
+  return runtime.submitAudit(binding.id, axis, verdict, findings, job.surface?.surfaceHash);
 }
 
 describe("full Forge remediation lifecycle", () => {
@@ -181,6 +181,10 @@ describe("full Forge remediation lifecycle", () => {
     expect(state.sliceGates?.S001?.status).toBe("passed");
 
     await runtime.createAuditJobs({ standards: auditRoute, acceptance_integration: auditRoute, architecture_minimality: auditRoute });
+    state = await runtime.status();
+    expect(state.auditJobs?.standards.status).toBe("pending");
+    expect(state.auditJobs?.acceptance_integration.status).toBe("pending");
+    expect(state.auditJobs?.architecture_minimality.status).toBe("pending");
     await submitAudit(runtime, "standards", "passed", []);
     await submitAudit(runtime, "acceptance_integration", "passed", []);
     state = await submitAudit(runtime, "architecture_minimality", "passed", []);

@@ -48,6 +48,8 @@ async function readEvents(path) {
 const workItemEvents = await readEvents(join(workItemRoot, "runtime", "events.jsonl"));
 const issueId = events.find((event) => event.issueId)?.issueId ?? events.find((event) => event.snapshot?.issueId)?.snapshot.issueId ?? "I001";
 const preflightEvents = await readEvents(join(workItemRoot, "issues", issueId, "task-preflight", "events.jsonl"));
+const remediationPreflightEvents = await readEvents(join(workItemRoot, "issues", issueId, "remediation-preflight", "events.jsonl"));
+const allEvents = [...workItemEvents, ...preflightEvents, ...remediationPreflightEvents, ...events];
 const issueCompletedAt = [...events].reverse().find((event) => event.type === "issue_completed")?.timestamp;
 const workItemStartedAt = workItemEvents.find((event) => event.type === "work_item_initialized")?.timestamp;
 const workItemToCompleted = workItemStartedAt && issueCompletedAt
@@ -74,6 +76,10 @@ console.log(JSON.stringify({
     taskPreflightProposals: preflightEvents.filter((event) => event.type === "task_preflight_proposed").length,
     tasksClaimed: events.filter((event) => event.type === "task_claimed").length,
     taskConformanceResults: events.filter((event) => event.type === "task_conformance_submitted").length,
+    finalAuditGenerations: events.filter((event) => event.type === "issue_audit_jobs_created").length,
     finalAuditResults: events.filter((event) => event.type === "issue_audit_submitted").length,
+    carriedFinalAuditAxes: events.filter((event) => event.type === "issue_audit_jobs_created").reduce((count, event) => count + (event.details?.carriedAxes?.length ?? 0), 0),
+    infrastructureRetries: allEvents.filter((event) => event.type === "infrastructure_retry_scheduled").length,
+    unknownSpawnOutcomes: allEvents.filter((event) => event.type === "infrastructure_spawn_outcome_unknown").length,
   },
 }, null, 2));

@@ -128,6 +128,9 @@ describe("TasksService", () => {
     expect(prompt).toContain("Fallback is default-deny");
     expect(prompt).toContain("app/composition-root file");
     expect(prompt).toContain("pass-through file fragmentation");
+    expect(prompt).toContain("Proportionality Policy");
+    expect(prompt).toContain("live uncertainty");
+    expect(prompt).toContain("Passing with no findings is valid");
   });
 
   it("freezes self-contained Task packages and initializes a shared-serial Runtime", async () => {
@@ -150,6 +153,8 @@ describe("TasksService", () => {
     expect(taskMarkdown).toContain("## Minimal Implementation Policy");
     expect(taskMarkdown).toContain("Fallback is default-deny");
     expect(taskMarkdown).toContain("Keep composition roots and app entry modules thin");
+    expect(taskMarkdown).toContain("reachable supported-use failure");
+    expect(taskMarkdown).toContain("optional confidence");
     expect(JSON.parse(await readFile(join(result.manifest.runtimeRoot, "dag.json"), "utf8")).tasks[0].contractHash).not.toBe("pending");
   });
 
@@ -210,8 +215,12 @@ describe("TasksService", () => {
     expect(frozenStatus.runtime?.tasks.T001?.status).toBe("ready");
     expect(frozenStatus.manifest?.preflight?.bindingId).toBe(preflight!.job.binding!.id);
     expect((await new TaskPreflightService(workItemRoot, "I001").status())?.frozenTaskPlanHash).toBe(result.taskPlanHash);
+    const receiptPath = join(workItemRoot, "issues", "I001", "task-preflight", "receipts", "proposal-1.json");
+    const immutableReceipt = await readFile(receiptPath, "utf8");
+    expect(immutableReceipt).not.toContain("frozenTaskPlanHash");
     const repeated = await orchestrator.submitResult({ workItemRoot, issueId: "I001", bindingId: preflight!.job.binding!.id, proposalHash: preflight!.proposalHash, verdict: "passed", findings: [] });
     expect(repeated.idempotent).toBe(true);
+    expect(await readFile(receiptPath, "utf8")).toBe(immutableReceipt);
   });
 
   it("keeps blocked Preflight evidence immutable and requires a changed Proposal Generation", async () => {
@@ -248,15 +257,20 @@ describe("TasksService", () => {
     const service = new TaskPreflightService(workItemRoot, "I001", "remediation");
     const route = { profile: "audit", model: "test/audit", thinking: "high" as const, maxTurns: 20, configGeneration: 1, configHash: "config" };
     const base = plan();
-    const proposal = (generation: number, proposalHash: string) => ({
-      schemaVersion: 1 as const, generation, issueId: "I001", kind: "remediation" as const, runtimeRoot: join(workItemRoot, "issues", "I001", "runtime"), sourceFindingHash: `finding-${generation}`,
-      proposalHash, surfaceHash: `surface-${generation}`,
-      source: { workItemId: "label", prdHash: "prd", issuesHash: "issues", issueHash: "issue", repositoryRoot: workItemRoot, repositoryRevision: revision },
-      slices: base.slices, tasks: base.tasks, createdAt: new Date().toISOString(),
-    });
-    await service.proposeRaw(proposal(1, "proposal-1"), route);
+    const proposal = (generation: number, proposalHash: string) => {
+      const fields = {
+        schemaVersion: 1 as const, generation, issueId: "I001", kind: "remediation" as const, runtimeRoot: join(workItemRoot, "issues", "I001", "runtime"), sourceFindingHash: `finding-${generation}`,
+        sourcePrdHash: "prd", sourceIssueHash: "issue", acceptanceIds: ["AC-01"], decisionIds: ["D-01"], rerunSliceIds: ["S001"], proposalHash,
+        source: { workItemId: "label", prdHash: "prd", issuesHash: "issues", issueHash: "issue", repositoryRoot: workItemRoot, repositoryRevision: revision },
+        slices: base.slices, tasks: base.tasks, createdAt: new Date().toISOString(),
+      };
+      const surfaceHash = stableHash({ policyVersion: 1, kind: "remediation", sourceFindingHash: fields.sourceFindingHash, sourcePrdHash: fields.sourcePrdHash, sourceIssueHash: fields.sourceIssueHash, acceptanceIds: fields.acceptanceIds, decisionIds: fields.decisionIds, tasks: fields.tasks, rerunSliceIds: fields.rerunSliceIds });
+      return { ...fields, surfaceHash };
+    };
+    const firstProposal = proposal(1, "proposal-1");
+    await service.proposeRaw(firstProposal, route);
     let state = await service.status();
-    let binding = TaskPreflightService.createBinding({ proposalGeneration: 1, proposalHash: "proposal-1", surfaceHash: "surface-1", attempt: 1, profile: "audit", model: "test/audit", thinking: "high", maxTurns: 20, startedStateGeneration: state!.generation });
+    let binding = TaskPreflightService.createBinding({ proposalGeneration: 1, proposalHash: "proposal-1", surfaceHash: firstProposal.surfaceHash, attempt: 1, profile: "audit", model: "test/audit", thinking: "high", maxTurns: 20, startedStateGeneration: state!.generation });
     await service.claim(binding);
     await service.submitResult({ bindingId: binding.id, proposalHash: "proposal-1", verdict: "passed", findings: [] });
     await service.markApplied(2);
@@ -327,8 +341,8 @@ describe("TasksService", () => {
   it("rejects non-self-contained Tasks and unproven dependencies", async () => {
     const { tasks } = await fixture();
     const tooBroad = plan();
-    tooBroad.tasks[0] = { ...tooBroad.tasks[0]!, reads: [...tooBroad.tasks[0]!.reads, { path: "a.ts", symbol: "a", reason: "a" }, { path: "b.ts", symbol: "b", reason: "b" }, { path: "c.ts", symbol: "c", reason: "c" }] };
-    await expect(tasks.submit("I001", tooBroad.slices, tooBroad.tasks)).rejects.toThrow("between 1 and 3");
+    tooBroad.tasks[0] = { ...tooBroad.tasks[0]!, reads: [...tooBroad.tasks[0]!.reads, { path: "a.ts", symbol: "a", reason: "a" }, { path: "b.ts", symbol: "b", reason: "b" }, { path: "c.ts", symbol: "c", reason: "c" }, { path: "d.ts", symbol: "d", reason: "d" }, { path: "e.ts", symbol: "e", reason: "e" }] };
+    await expect(tasks.submit("I001", tooBroad.slices, tooBroad.tasks)).rejects.toThrow("between 1 and 5");
 
     const missingArtifact = plan();
     missingArtifact.tasks[0] = { ...missingArtifact.tasks[0]!, dependencies: ["T002"] };

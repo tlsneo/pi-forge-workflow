@@ -1,3 +1,5 @@
+import type { SubagentFailureRecord } from "../subagents/failures.js";
+
 export const TASK_STATUSES = [
   "pending",
   "ready",
@@ -13,6 +15,7 @@ export const TASK_STATUSES = [
   "retry_ready",
   "blocked",
   "failed",
+  "infrastructure_failed",
   "cancelled",
   "needs_user",
 ] as const;
@@ -22,7 +25,7 @@ export type AgentStatus = "none" | "queued" | "running" | "completed" | "failed"
 export type HandoffStatus = "none" | "valid" | "invalid";
 export type VerificationStatus = "not_run" | "running" | "passed" | "failed";
 export type GitStatus = "not_started" | "committed" | "receipted" | "merged";
-export type IssueStatus = "planned" | "executing" | "integrating" | "auditing" | "completed" | "blocked" | "needs_user" | "failed";
+export type IssueStatus = "planned" | "executing" | "integrating" | "auditing" | "completed" | "blocked" | "needs_user" | "failed" | "infrastructure_failed";
 export type AssuranceProfile = "fast" | "standard" | "high-assurance";
 export type ThinkingLevel = string;
 
@@ -109,6 +112,7 @@ export interface RuntimeManifest {
   workspaceMode: "shared-serial";
   assuranceProfile: AssuranceProfile;
   taskConformanceRequired: boolean;
+  acceptanceEvidenceRequired?: boolean;
   issueModelProfile?: string;
   auditModelProfile?: string;
   modelPolicy: ModelPolicy;
@@ -154,7 +158,7 @@ export interface TaskHandoff {
 }
 
 export type TaskConformanceVerdict = "passed" | "blocked";
-export type TaskConformanceJobStatus = "pending" | "starting" | "running" | "passed" | "blocked" | "interrupted" | "retry_ready" | "failed";
+export type TaskConformanceJobStatus = "pending" | "starting" | "running" | "passed" | "blocked" | "interrupted" | "retry_ready" | "failed" | "infrastructure_failed";
 
 export interface TaskConformanceFinding {
   id: string;
@@ -225,6 +229,9 @@ export interface TaskConformanceJob {
   status: TaskConformanceJobStatus;
   attempt: number;
   maxAttempts: number;
+  infrastructureAttempts?: number;
+  maxInfrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
   model: string;
   thinking: ThinkingLevel;
   maxTurns: number;
@@ -270,6 +277,10 @@ export interface TaskState {
   status: TaskStatus;
   attempt: number;
   attemptsByModelPolicy?: Record<string, number>;
+  infrastructureAttempts?: number;
+  infrastructureAttemptsByModelPolicy?: Record<string, number>;
+  maxInfrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
   binding?: TaskBinding;
   agentStatus: AgentStatus;
   handoffStatus: HandoffStatus;
@@ -297,7 +308,7 @@ export interface SliceGateState {
 
 export type IssueAuditAxis = "standards" | "acceptance_integration" | "architecture_minimality";
 export type IssueAuditVerdict = "passed" | "blocked";
-export type IssueAuditJobStatus = "pending" | "starting" | "running" | "result_submitted" | "completed" | "interrupted" | "retry_ready" | "failed";
+export type IssueAuditJobStatus = "pending" | "starting" | "running" | "result_submitted" | "completed" | "interrupted" | "retry_ready" | "failed" | "infrastructure_failed";
 
 export interface IssueAuditFinding {
   id: string;
@@ -309,17 +320,43 @@ export interface IssueAuditFinding {
   suggestedResolution?: string;
 }
 
+export interface IssueAuditSurfaceReference {
+  schemaVersion: 1;
+  policyVersion: number;
+  axis: IssueAuditAxis;
+  workItemId: string;
+  issueId: string;
+  issueHash: string;
+  repositoryRoot: string;
+  auditGeneration: number;
+  taskIds: string[];
+  changedFiles: string[];
+  surfaceHash: string;
+  artifactPath: string;
+}
+
+export interface IssueAuditSurface extends IssueAuditSurfaceReference {
+  evidence: unknown;
+}
+
 export interface IssueAuditReview {
   axis: IssueAuditAxis;
   verdict: IssueAuditVerdict;
   bindingId: string;
+  surfaceHash?: string;
   findings: IssueAuditFinding[];
   submittedAt: string;
+  carriedFrom?: {
+    auditGeneration: number;
+    bindingId: string;
+    surfaceHash: string;
+  };
 }
 
 export interface IssueAuditBinding {
   id: string;
   axis: IssueAuditAxis;
+  surfaceHash?: string;
   attempt: number;
   spawnRequestId: string;
   agentId?: string;
@@ -331,7 +368,7 @@ export interface IssueAuditBinding {
 }
 
 export type AuditBlockerVerificationStatus = "confirmed" | "rejected" | "needs_more_evidence";
-export type AuditBlockerVerifierJobStatus = "pending" | "starting" | "running" | "result_submitted" | "completed" | "interrupted" | "retry_ready" | "failed";
+export type AuditBlockerVerifierJobStatus = "pending" | "starting" | "running" | "result_submitted" | "completed" | "interrupted" | "retry_ready" | "failed" | "infrastructure_failed";
 
 export interface AuditBlockerFindingReference {
   findingId: string;
@@ -365,6 +402,16 @@ export interface AuditBlockerVerifierReview {
   bindingId: string;
   findingHash: string;
   results: AuditBlockerVerificationResult[];
+  resultHash?: string;
+  artifactPath?: string;
+  submittedAt: string;
+}
+
+export interface AuditBlockerVerifierResultReference {
+  bindingId: string;
+  findingHash: string;
+  resultHash: string;
+  artifactPath: string;
   submittedAt: string;
 }
 
@@ -373,6 +420,9 @@ export interface AuditBlockerVerifierJob {
   status: AuditBlockerVerifierJobStatus;
   attempt: number;
   maxAttempts: number;
+  infrastructureAttempts?: number;
+  maxInfrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
   findingHash: string;
   findings: AuditBlockerFindingReference[];
   model: string;
@@ -380,7 +430,7 @@ export interface AuditBlockerVerifierJob {
   maxTurns: number;
   configHash: string;
   binding?: AuditBlockerVerifierBinding;
-  result?: AuditBlockerVerifierReview;
+  result?: AuditBlockerVerifierResultReference | AuditBlockerVerifierReview;
   error?: string;
 }
 
@@ -398,9 +448,12 @@ export interface RemediationPlannerBinding {
 }
 
 export interface RemediationPlannerJob {
-  status: "pending" | "starting" | "running" | "proposal_submitted" | "completed" | "interrupted" | "retry_ready" | "failed";
+  status: "pending" | "starting" | "running" | "proposal_submitted" | "completed" | "interrupted" | "retry_ready" | "failed" | "infrastructure_failed";
   attempt: number;
   maxAttempts: number;
+  infrastructureAttempts?: number;
+  maxInfrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
   model: string;
   thinking: ThinkingLevel;
   maxTurns: number;
@@ -481,6 +534,15 @@ export interface IssueAuditJob {
   status: IssueAuditJobStatus;
   attempt: number;
   maxAttempts: number;
+  infrastructureAttempts?: number;
+  maxInfrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
+  surface?: IssueAuditSurfaceReference;
+  carriedFrom?: {
+    auditGeneration: number;
+    bindingId: string;
+    surfaceHash: string;
+  };
   model: string;
   thinking: ThinkingLevel;
   maxTurns: number;
@@ -504,6 +566,7 @@ export interface IssueRuntimeState {
   auditGeneration?: number;
   auditJobs?: Record<IssueAuditAxis, IssueAuditJob>;
   audits?: Partial<Record<IssueAuditAxis, IssueAuditReview>>;
+  auditInvalidatedAxes?: IssueAuditAxis[];
   auditBlockerVerifierJob?: AuditBlockerVerifierJob;
   remediationPlan?: RemediationPlan;
   humanDecision?: HumanDecisionRequest;

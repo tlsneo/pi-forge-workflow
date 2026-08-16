@@ -1,3 +1,3 @@
-export function createConfig() {
-  return { retries: 2 };
+export function createConfig(overrides = {}) {
+  return { retries: overrides.retries ?? 2 };
 }

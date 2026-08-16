@@ -215,7 +215,7 @@ describe("WorkItemService", () => {
       verdict: "blocked",
       surfaceHash: firstSurfaces.architecture,
       reviewerId: "architecture-v1",
-      findings: [{ severity: "blocker", message: "The application seam is unspecified", evidence: ["src/client.ts#createClient"] }],
+      findings: [{ severity: "blocker", message: "The application seam is unspecified", evidence: ["src/client.ts#createClient"], suggestedResolution: "Name only the existing createClient application seam" }],
     });
 
     const amendedPrd = prd({
@@ -339,6 +339,24 @@ describe("WorkItemService", () => {
     expect((await service.pendingReviewJobs()).map((job) => job.id)).toEqual([plan!.id]);
   });
 
+  it("allows only one concurrent Binding claim for a PRD Review Job", async () => {
+    const { service } = await createService();
+    await checkpointResolved(service);
+    const submitted = await service.submitPrd(prd());
+    const [plan] = reviewPlans(submitted);
+    await service.createReviewJobs([plan!]);
+    const state = await service.store.readState();
+    const makeBinding = () => WorkItemService.createReviewBinding({
+      jobId: plan!.id, workItemId: state.workItemId, prdGeneration: plan!.prdGeneration, axis: plan!.axis,
+      surfaceHash: plan!.surfaceHash, attempt: 1, profile: plan!.profile, model: plan!.model,
+      thinking: plan!.thinking, maxTurns: plan!.maxTurns, startedStateGeneration: state.generation,
+    });
+    const claims = await Promise.allSettled([service.claimReviewJob(plan!.id, makeBinding()), service.claimReviewJob(plan!.id, makeBinding())]);
+    expect(claims.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(claims.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect((await service.store.readState()).reviewJobs?.[plan!.id]?.attempt).toBe(1);
+  });
+
   it("rejects manual reviews after automated Review Jobs are frozen", async () => {
     const { service } = await createService();
     await checkpointResolved(service);
@@ -372,6 +390,7 @@ describe("WorkItemService", () => {
         evidence: ["src/config.ts#AppConfig"],
         violatedRule: "Design must use an existing seam",
         verification: "Read AppConfig",
+        suggestedResolution: "Use only the existing AppConfig seam",
       }],
     });
     expect((await service.store.readState()).status).toBe("blocked");
@@ -401,7 +420,7 @@ describe("WorkItemService", () => {
     await service.bindBlockerVerificationAgent(binding.id, "verifier-agent");
     await service.markBlockerVerifierStarted("verifier-agent");
     const verified = await service.submitBlockerVerification(binding.id, [{
-      findingId: "F-ARCH-001",
+      findingId: job.findings[0]!.finding.id,
       status: "rejected",
       evidence: ["src/config.ts#AppConfig"],
       rationale: "AppConfig is present and is the selected seam.",
@@ -423,13 +442,13 @@ describe("WorkItemService", () => {
     await service.submitReview({ axis: "evidence", verdict: "passed", surfaceHash: surfaces.evidence, reviewerId: "evidence", findings: [] });
     await service.submitReview({
       axis: "architecture", verdict: "blocked", surfaceHash: surfaces.architecture, reviewerId: "architecture",
-      findings: [{ id: "F-ARCH-001", severity: "blocker", message: "Missing seam", evidence: ["src/client.ts#createClient"], violatedRule: "Use an existing seam", verification: "Read createClient" }],
+      findings: [{ id: "F-ARCH-001", severity: "blocker", message: "Missing seam", evidence: ["src/client.ts#createClient"], violatedRule: "Use an existing seam", verification: "Read createClient", suggestedResolution: "Name only the existing createClient seam" }],
     });
     const created = await service.createBlockerVerificationJob({ profile: "verifier", model: "test/verifier", thinking: "high", maxTurns: 20, maxAttempts: 1, configGeneration: 1, configHash: "hash" });
     const job = created.blockerVerificationJob!;
     const binding = WorkItemService.createBlockerVerificationBinding({ jobId: job.id, workItemId: created.workItemId, prdGeneration: job.prdGeneration, findingHash: job.findingHash, attempt: 1, profile: job.profile, model: job.model, thinking: job.thinking, maxTurns: job.maxTurns, startedStateGeneration: created.generation });
     await service.claimBlockerVerification(binding);
-    const state = await service.submitBlockerVerification(binding.id, [{ findingId: "F-ARCH-001", status: "confirmed", evidence: ["src/client.ts#createClient"], rationale: "The function exposes no application seam." }]);
+    const state = await service.submitBlockerVerification(binding.id, [{ findingId: job.findings[0]!.finding.id, status: "confirmed", evidence: ["src/client.ts#createClient"], rationale: "The function exposes no application seam." }]);
     expect(state.status).toBe("blocked");
     await expect(service.approve({ approvedBy: "user", evidence: "approve anyway" })).rejects.toThrow("blocked");
   });

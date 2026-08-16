@@ -33,7 +33,7 @@ pi install https://github.com/tlsneo/pi-forge-workflow
 也可以固定 Tag 或 Commit：
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.7.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v0.8.0
 ```
 
 ### 从本地 Checkout 安装
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 如果希望只安装到当前项目，给 `pi install` 增加 `-l`。
 
-> 当前 `package.json` 仍是 `"private": true` 和版本 `0.7.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
+> 当前 `package.json` 仍是 `"private": true` 和版本 `0.8.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
 
 ## 公开工作流
 
@@ -92,7 +92,7 @@ workspace/                 # 不要求 .git
 
 从 `workspace` 启动 Pi，运行 `forge-prd`；发现多个 Repository 时，从 `forge_prd_repositories` 返回的列表中选择 Target Repository。Forge 只让 Git 解析规范 Top-level Working Tree，因此单仓库、Monorepo 子目录、嵌套独立 Repo、Submodule 和 linked Worktree 都使用同一套路径机制，不进入不同 Runtime 分支。选择结果冻结在 Work Item，并由 Issue 和 Task 继承；当前版本保持一个 Work Item 只操作一个 Git Repository。
 
-临时跨 Repo 做只读调查时，可使用新增入口 `forge_explore_repository` 启动现有 `Explore` Agent。它接收 Target Repository 路径和一份自包含调查 Prompt，通过 pi-subagents RPC 把 `cwd` 精确设为该 Repository，并且不请求 Worktree Isolation；多个调用可以并发调查多个独立 Repo。原有的 `Agent` → `Explore` 能力保持不变；当 Pi Session 本身已经位于目标 Repository 时，仍可继续使用原入口。
+临时跨 Repo 做只读调查时，可使用新增入口 `forge_explore_repository` 启动现有 `Explore` Agent。它接收 Target Repository 路径和一份自包含调查 Prompt，通过 pi-subagents RPC 把 `cwd` 精确设为该 Repository，并且不请求 Worktree Isolation；多个调用可以在 Work Item 激活前并发调查多个独立 Repo。没有活跃 Forge Work Item 时，普通 `Agent` 能力保持可用；当前 Control Root 下存在活跃 Work Item 时，机械 Guard 会阻止普通 `Agent` 调用（包括 `Explore` 和 `Plan`）以及交互式 `forge_explore_repository`，避免它们冒充经过路由和 Binding 的正式 Forge Job。正式 Forge RPC Spawn 不受影响。
 
 ## 设计架构
 
@@ -198,7 +198,7 @@ tasks/T003/TASK-V001.md
 一个 Task 通常包含：
 
 - 一个主要 `path#Symbol` Edit Point；
-- 一到三个精确 Reads，以及最多三个不可分离的 Writes；
+- 通常一到三个精确 Reads / Writes；经证明不可分离的行为最多允许五个，六个及以上会被机械拒绝；
 - 带稳定 `BP-01...` ID、精确 Instruction 和 Expected Evidence 的有序步骤；
 - Expected Patch Shape、Forbidden Changes 和 Fail-closed Stop Conditions；
 - 明确的 Produces、Consumes、Out of Scope 和 Acceptance Ownership；
@@ -219,6 +219,12 @@ tasks/T003/TASK-V001.md
 - 保持附近代码的命名、控制流、错误、Import 和测试风格；
 - App Entry 和 Composition Root 只负责依赖组装和流程编排；
 - 根据内聚职责而不是文件行数拆分，同时避免单函数透传 Module。
+
+配套的 **Proportionality Policy（比例原则）** 参考了 [HERO — Anti-OverDefense](https://github.com/wanshuiyin/HERO-Anti-OverDefense)，只约束提出的工作，不压制真实问题的发现：每个 Guard、兼容路径、抽象、依赖、Artifact、版本、检查、Audit Finding 或修复都必须追溯到冻结需求、仓库明确规则，或经受支持用法真实可达的失败。检查必须解决仍然活着的不确定性或验证冻结义务，并在失败时改变下一步动作。明确要求的安全、迁移、兼容、Verification、Review 和机械完整性工作仍然必须执行。没有 Finding 的通过结果是有效结果；请求的 Artifact 和权威 Verification 完成后即停止加固。
+
+Subagent 失败与产品语义失败分开记录。可识别的 `503` / 服务容量、安全 RPC Timeout、Transport Failure 和已终止 Lifecycle 会写入追加式 `infrastructure_retry_scheduled` Event，并使用独立的有界 Infrastructure Budget，不消耗 Worker 或 Reviewer 的语义尝试次数。Spawn 请求发出后的 RPC Timeout 在 pi-subagents RPC v2 下结果不可知，因此 Forge 写入 `infrastructure_spawn_outcome_unknown` 并 Fail-closed，避免启动重复 Live Agent。预算耗尽后进入明确的 `infrastructure_failed`，不会虚构产品 Blocker。
+
+Standard 和 High Assurance 的 Final Auditor 现在只接收紧凑、不可变、按 Axis 划分的 Review Surface 和独立 Surface Hash。验证后的修复会确定性失效 Acceptance / Integration 以及产生 Confirmed Finding 的 Axis；Runtime 只把 Repair Evidence 追加到这些 Surface，并且仅在重新计算的 Surface Hash 未变化时携带 Passed Axis。被 Verifier 拒绝的 Finding 也只重跑其来源 Axis。携带的 Review 通过 `carriedFrom` Evidence 进入 Final Receipt。
 
 ### 6. 不可变执行身份
 
@@ -258,7 +264,7 @@ Audit Finding
 → 追加 DAG Generation
 → Repair Worker
 → 受影响 Slice Gate
-→ 新一轮三轴 Audit
+→ 受影响 Axis 新 Audit + Hash 验证的 Carried Axis
 ```
 
 架构变更、公开 Interface 变更、Scope 变更、证据缺失、不安全仓库操作或无法由仓库事实决定的产品选择，会停在不可变 Human Decision Gate。记录 Answer 和恢复执行是两个分离动作。
@@ -272,6 +278,9 @@ Audit Finding
 - 从 PRD 到 Issue、Slice、Task、Gate、Audit 的完整 Acceptance Traceability。
 - 通过 `.pi/forge.json` 配置 Model Profile 和 Role Routing。
 - Binding-bound `pi-subagents` Worker、Reviewer、Verifier 和 Planner。
+- Forge Work Item 活跃期间的普通 Agent 机械 Guard。
+- RPC、服务、Transport 和 Lifecycle Failure 的独立有界 Infrastructure Retry。
+- 紧凑的 Axis-specific Final Audit Surface 和确定性增量 Re-audit。
 - Task Contract Freeze 前的独立 Task Preflight。
 - 带稳定 ID、Expected Evidence、Expected Patch Shape、Forbidden Changes 和 Stop Conditions 的决策封闭 Blueprint。
 - 精确 Task Context、声明式 Write Boundary，以及每个 Blueprint Step 的 Handoff Traceability。
@@ -467,7 +476,7 @@ pi -e ./extensions/forge-workflow/index.ts
 - Evidence Mapping 和最小充分 Design Selection 已内置在 `forge-prd`；不存在独立 Map、Design、Options 或 Spec Artifact。
 - 尚无 Forge 专用进度 UI。
 - 自动生命周期推进要求 Pi Session 保持运行；一次性 `pi -p` 不适合长期后台执行。
-- 由于 `pi-subagents` 尚无更完整的 Status / Resume RPC，恢复依赖 Runtime State 和 Lifecycle Event。
+- 由于 `pi-subagents` 尚无更完整的 Status / Resume RPC，恢复依赖 Runtime State 和 Lifecycle Event。已知发生在 Spawn 前的失败可按 Infrastructure Retry；Spawn 请求 Timeout 后 Forge 无法查询远端进程是否已启动，因此必须 Fail-closed，已经运行的 Agent仍需要最终 Lifecycle Event。
 - 项目仍处于 Pre-release，Artifact Schema 可能继续变化。
 
 ## 安全模型

@@ -1,5 +1,6 @@
 import type { IssuesGeneration } from "../issues/types.js";
 import type { ThinkingLevel } from "../runtime/types.js";
+import type { SubagentFailureRecord } from "../subagents/failures.js";
 
 export type WorkItemStatus =
   | "discovery"
@@ -8,7 +9,8 @@ export type WorkItemStatus =
   | "awaiting_approval"
   | "frozen"
   | "blocked"
-  | "needs_external_input";
+  | "needs_external_input"
+  | "infrastructure_failed";
 
 export type DecisionStatus = "open" | "answered" | "external";
 export type ReviewAxis = "coverage" | "evidence" | "architecture";
@@ -163,7 +165,8 @@ export type PrdReviewJobStatus =
   | "completed"
   | "interrupted"
   | "retry_ready"
-  | "failed";
+  | "failed"
+  | "infrastructure_failed";
 
 export interface PrdReviewJobPlan {
   id: string;
@@ -177,6 +180,7 @@ export interface PrdReviewJobPlan {
   thinking: ThinkingLevel;
   maxTurns: number;
   maxAttempts: number;
+  maxInfrastructureAttempts?: number;
   configGeneration: number;
   configHash: string;
 }
@@ -202,6 +206,8 @@ export interface PrdReviewBinding {
 export interface PrdReviewJob extends PrdReviewJobPlan {
   status: PrdReviewJobStatus;
   attempt: number;
+  infrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
   binding?: PrdReviewBinding;
   result?: PrdReview;
   error?: string;
@@ -247,6 +253,9 @@ export interface PrdBlockerVerificationJob {
   status: PrdReviewJobStatus;
   attempt: number;
   maxAttempts: number;
+  infrastructureAttempts?: number;
+  maxInfrastructureAttempts?: number;
+  lastFailure?: SubagentFailureRecord;
   profile: string;
   model: string;
   thinking: ThinkingLevel;
