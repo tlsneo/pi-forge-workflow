@@ -77,7 +77,7 @@ describe("TaskConformanceOrchestrator", () => {
     expect(spawnAgent(spawns[0])).toBe("forge-reviewer");
     expect(spawns[0].params.cwd).toBe(repositoryRoot);
     expect(spawnDescription(spawns[0])).toContain("forge-task-conformance");
-    expect(spawnModel(spawns[0])).toBe("test/audit");
+    expect(spawnModel(spawns[0])).toBe("test/audit:high");
     expect((await runtime.status()).tasks.T001?.conformanceJob?.surface).toMatchObject({ workItemId: "work-item-test", issueId: "I001", taskId: "T001" });
     expect(spawnTask(spawns[0])).toContain("forge_run_task_conformance_submit");
     expect(spawnTask(spawns[0])).toContain("every BP-xx Step");

@@ -97,7 +97,7 @@ describe("AuditRemediationOrchestrator", () => {
     const verifier = await orchestrator.startVerifier(runtimeRoot, context(repositoryRoot));
     expect(verifier.status).toBe("started");
     expect(spawnAgent(spawns[0])).toBe("forge-reviewer");
-    expect(spawnModel(spawns[0])).toBe("test/verifier");
+    expect(spawnModel(spawns[0])).toBe("test/verifier:high");
 
     const verifierState = await runtime.status();
     const result = await orchestrator.submitVerification(runtimeRoot, verifierState.auditBlockerVerifierJob!.binding!.id, [{ findingId: "ARCH-1", status: "confirmed", evidence: ["src/config.ts#AppConfig"], rationale: "The final code mutates shared state", missingEvidence: [] }], context(repositoryRoot));

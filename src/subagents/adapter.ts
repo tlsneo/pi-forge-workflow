@@ -121,6 +121,15 @@ function completionTokens(payload: Record<string, unknown>): SubagentLifecycleEv
   return { input, output, total };
 }
 
+function modelWithThinking(model: string, thinking: string): string {
+  const normalizedThinking = thinking.trim();
+  if (!normalizedThinking) throw new Error("Forge requires an explicit thinking level for pi-subagents spawn");
+  const slashIndex = model.lastIndexOf("/");
+  const colonIndex = model.lastIndexOf(":");
+  const baseModel = colonIndex > slashIndex ? model.slice(0, colonIndex) : model;
+  return `${baseModel}:${normalizedThinking}`;
+}
+
 function promptWithBindingMetadata(request: SpawnRequest): string {
   return [
     "<forge-subagent-binding>",
@@ -174,8 +183,7 @@ export class PiSubagentsAdapter {
         isolation: "none",
         context: "fresh",
         cwd: request.cwd,
-        model,
-        thinking: request.thinkingLevel,
+        model: modelWithThinking(model, request.thinkingLevel),
         turnBudget: { maxTurns: request.maxTurns, graceTurns: 0 },
         timeoutMs: 3_600_000,
       });

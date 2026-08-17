@@ -118,7 +118,7 @@ describe("IssueAuditOrchestrator", () => {
     const orchestrator = new IssueAuditOrchestrator(new PiSubagentsAdapter(bus, 100));
     const started = await orchestrator.start(runtimeRoot, context(repositoryRoot));
     expect(started).toHaveLength(3);
-    expect(spawns.every((spawn) => spawnAgent(spawn) === "forge-reviewer" && spawnModel(spawn) === "test/audit")).toBe(true);
+    expect(spawns.every((spawn) => spawnAgent(spawn) === "forge-reviewer" && spawnModel(spawn) === "test/audit:high")).toBe(true);
     expect(new Set(spawns.map(spawnDescription)).size).toBe(3);
     expect(spawns.every((spawn) => spawnTask(spawn).includes("Proportionality Policy"))).toBe(true);
     expect(spawns.every((spawn) => spawnTask(spawn).includes("Passing with no findings is valid"))).toBe(true);

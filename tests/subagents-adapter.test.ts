@@ -75,12 +75,12 @@ describe("PiSubagentsAdapter", () => {
       isolation: "none",
       context: "fresh",
       cwd: "/tmp/project",
-      model: "test/simple",
-      thinking: "low",
+      model: "test/simple:low",
       turnBudget: { maxTurns: 12, graceTurns: 0 },
       timeoutMs: 3_600_000,
     });
     expect(request.params.task).toContain("description: workflow:binding:T01");
+    expect(request.params).not.toHaveProperty("thinking");
     expect(request.params).not.toHaveProperty("workflowScript");
     expect(request.params).not.toHaveProperty("worktree");
   });

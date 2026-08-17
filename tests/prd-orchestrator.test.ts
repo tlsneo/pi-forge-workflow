@@ -140,7 +140,7 @@ describe("PrdReviewOrchestrator", () => {
       expect.stringContaining("prd-1-evidence-1"),
       expect.stringContaining("prd-1-architecture-1"),
     ]));
-    expect(spawnRequests.every((request) => spawnModel(request) === "test/audit")).toBe(true);
+    expect(spawnRequests.every((request) => spawnModel(request) === "test/audit:high")).toBe(true);
     expect(spawnRequests.every((request) => spawnTask(request).includes("Binding ID:"))).toBe(true);
 
     const state = await service.store.readState();
@@ -214,7 +214,7 @@ describe("PrdReviewOrchestrator", () => {
     expect(verifiedState.blockerVerificationJob?.status).toBe("starting");
     expect(spawned).toHaveLength(4);
     expect(spawned[3]?.description).toContain("forge-prd-blocker:");
-    expect(spawned[3]?.model).toBe("test/verifier");
+    expect(spawned[3]?.model).toBe("test/verifier:high");
   }, 30_000);
 
   it("stops known live Review Bindings before explicit coordinator takeover", async () => {
