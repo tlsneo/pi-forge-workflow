@@ -25,7 +25,7 @@ export async function startInteractiveExplore(
   const config = await loadForgeConfig(controlRoot);
   const profile = resolveForgeProfile(config, "interactiveExplore");
   const protocol = await adapter.ping();
-  if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+  if (protocol < 1) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
   const agentId = await adapter.spawn({
     type: "Explore",
     prompt: request.prompt,

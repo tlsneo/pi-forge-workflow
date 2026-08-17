@@ -10,6 +10,7 @@ import { buildIssueAuditSurface } from "../src/runtime/audit-surfaces.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import type { IssueAuditAxis, IssueRuntimeState, RuntimeManifest, TaskDag } from "../src/runtime/types.js";
 import { PiSubagentsAdapter, type EventBus } from "../src/subagents/adapter.js";
+import { installRpcV1, RPC_V1_REQUEST, spawnAgent, spawnDescription, spawnModel, spawnTask } from "./helpers/nicobailon-rpc.js";
 
 class FakeBus implements EventBus {
   handlers = new Map<string, Set<(payload: any) => void>>();
@@ -86,8 +87,7 @@ describe("IssueAuditOrchestrator", () => {
 
     const bus = new FakeBus();
     let rpcCalls = 0;
-    bus.on("subagents:rpc:ping", () => { rpcCalls += 1; });
-    bus.on("subagents:rpc:spawn", () => { rpcCalls += 1; });
+    bus.on(RPC_V1_REQUEST, (request) => { if (request.method === "ping" || request.method === "spawn") rpcCalls += 1; });
     const started = await new IssueAuditOrchestrator(new PiSubagentsAdapter(bus, 100)).start(runtimeRoot, context(repositoryRoot));
 
     expect(started).toEqual([]);
@@ -114,17 +114,16 @@ describe("IssueAuditOrchestrator", () => {
 
     const bus = new FakeBus();
     const spawns: any[] = [];
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => { spawns.push(request); bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${spawns.length}` } }); });
+    installRpcV1(bus, { onSpawn: (request) => spawns.push(request), nextId: () => `agent-${spawns.length}` });
     const orchestrator = new IssueAuditOrchestrator(new PiSubagentsAdapter(bus, 100));
     const started = await orchestrator.start(runtimeRoot, context(repositoryRoot));
     expect(started).toHaveLength(3);
-    expect(spawns.every((spawn) => spawn.type === "forge-reviewer" && spawn.options.model.id === "audit")).toBe(true);
-    expect(new Set(spawns.map((spawn) => spawn.options.description)).size).toBe(3);
-    expect(spawns.every((spawn) => spawn.prompt.includes("Proportionality Policy"))).toBe(true);
-    expect(spawns.every((spawn) => spawn.prompt.includes("Passing with no findings is valid"))).toBe(true);
-    expect(spawns.every((spawn) => spawn.prompt.includes("Compact Axis Surface:"))).toBe(true);
-    expect(spawns.every((spawn) => spawn.prompt.includes("Axis Surface Hash:"))).toBe(true);
+    expect(spawns.every((spawn) => spawnAgent(spawn) === "forge-reviewer" && spawnModel(spawn) === "test/audit")).toBe(true);
+    expect(new Set(spawns.map(spawnDescription)).size).toBe(3);
+    expect(spawns.every((spawn) => spawnTask(spawn).includes("Proportionality Policy"))).toBe(true);
+    expect(spawns.every((spawn) => spawnTask(spawn).includes("Passing with no findings is valid"))).toBe(true);
+    expect(spawns.every((spawn) => spawnTask(spawn).includes("Compact Axis Surface:"))).toBe(true);
+    expect(spawns.every((spawn) => spawnTask(spawn).includes("Axis Surface Hash:"))).toBe(true);
     await expect(readFile(join(runtimeRoot, "audits", "issue-audit-plan-1.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
     let state = await runtime.status();
@@ -172,8 +171,7 @@ describe("IssueAuditOrchestrator", () => {
     expect(state.issueStatus).toBe("auditing");
 
     let spawnCount = 0;
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${++spawnCount}` } }));
+    installRpcV1(bus, { nextId: () => `agent-${++spawnCount}` });
     const resumed = await orchestrator.start(runtimeRoot, context(repositoryRoot));
     expect(resumed.every((result) => result.status === "started")).toBe(true);
     state = await runtime.status();

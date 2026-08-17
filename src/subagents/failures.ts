@@ -63,7 +63,7 @@ export function classifySubagentFailure(
 
 export function isAmbiguousSpawnOutcome(failure: SubagentFailureRecord): boolean {
   return failure.source === "spawn" && (
-    (failure.kind === "rpc_timeout" && /subagents:rpc:spawn/i.test(failure.message))
+    (failure.kind === "rpc_timeout" && /(?:subagents:rpc(?::v1:request)?[^\n]*\bspawn\b|rpc timeout[^\n]*\bspawn\b)/i.test(failure.message))
     || /spawn outcome unknown|lifecycle missing during recovery before/i.test(failure.message)
   );
 }

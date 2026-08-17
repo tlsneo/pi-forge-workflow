@@ -202,4 +202,4 @@ After all axes submit, Runtime automatically creates a different-Binding Verifie
 }
 ```
 
-Statuses are `confirmed`, `rejected`, and `needs_more_evidence`. The last status also requires `missingEvidence`. After a coordinator restart, `forge_prd_resume_reviews` preserves any live-looking Binding that already has an Agent ID and waits for its real lifecycle event. A `starting` Binding without an Agent ID has an unknowable spawn outcome under RPC v2 and fails closed; Forge does not start a duplicate attempt without stronger status evidence.
+Statuses are `confirmed`, `rejected`, and `needs_more_evidence`. The last status also requires `missingEvidence`. After a coordinator restart, `forge_prd_resume_reviews` preserves any live-looking Binding that already has a Nicobailon Workflow run ID and waits for its real lifecycle event. A `starting` Binding without a run ID has an unknowable RPC v1 spawn outcome and fails closed; Forge does not start a duplicate attempt without stronger status evidence.

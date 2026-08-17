@@ -100,7 +100,16 @@ describe("ForgeConfigService", () => {
     expect(result.receipt.generation).toBe(1);
     expect(await readFile(join(root, ".pi", "forge.json"), "utf8")).toContain('"root": ".forge"');
     await expect(readFile(join(root, ".pi", "agents", "forge-researcher.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readFile(join(root, ".pi", "agents", "forge-designer.md"), "utf8")).toContain("Forge Remediation Planner");
+    const worker = await readFile(join(root, ".pi", "agents", "task-worker.md"), "utf8");
+    const reviewer = await readFile(join(root, ".pi", "agents", "forge-reviewer.md"), "utf8");
+    const designer = await readFile(join(root, ".pi", "agents", "forge-designer.md"), "utf8");
+    expect(worker).toContain("name: task-worker");
+    expect(worker).toContain("task_resume, task_checkpoint, task_handoff");
+    expect(reviewer).toContain("name: forge-reviewer");
+    expect(reviewer).toContain("forge_run_human_decision_request");
+    expect(designer).toContain("Forge Remediation Planner");
+    expect(designer).toContain("name: forge-designer");
+    expect([worker, reviewer, designer].every((template) => template.includes("defaultContext: fresh") && template.includes("maxSubagentDepth: 0") && template.includes('acceptance: {"level":"none"'))).toBe(true);
     expect(await readFile(join(root, ".gitignore"), "utf8")).toContain("/.forge/");
     const instructions = await readFile(join(root, "AGENTS.md"), "utf8");
     expect(instructions).toContain("<!-- pi-forge-workflow:start -->");
@@ -108,15 +117,19 @@ describe("ForgeConfigService", () => {
     expect(instructions).toContain("live uncertainty");
     const explore = await readFile(join(root, ".pi", "agents", "Explore.md"), "utf8");
     const plan = await readFile(join(root, ".pi", "agents", "Plan.md"), "utf8");
+    expect(explore).toContain("name: Explore");
     expect(explore).toContain("model: test/simple");
-    expect(explore).toContain("max_turns: 30");
+    expect(explore).toContain('turnBudget: {"maxTurns":30,"graceTurns":0}');
+    expect(explore).toContain("tools: read, grep, find, ls");
+    expect(explore).not.toContain("tools: read, bash");
+    expect(plan).toContain("name: Plan");
     expect(plan).toContain("model: test/complex");
-    expect(plan).toContain("max_turns: 100");
-    expect(JSON.parse(await readFile(join(root, ".pi", "subagents.json"), "utf8"))).toMatchObject({ fallbackSubagent: "none", disableDefaultAgents: false });
+    expect(plan).toContain('turnBudget: {"maxTurns":100,"graceTurns":0}');
+    await expect(readFile(join(root, ".pi", "subagents.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     const status = await service.status(models);
     expect(status.templateStatus.every((template) => template.matches)).toBe(true);
     expect(status.instructionStatus?.matches).toBe(true);
-    expect(status.subagentsStatus?.strict).toBe(true);
+    expect(status.subagentsStatus?.strict).toBe(false);
   });
 
   it("initializes a non-Git Control Workspace and skips Git ignore mutation", async () => {
@@ -131,18 +144,15 @@ describe("ForgeConfigService", () => {
     await expect(readFile(join(root, ".gitignore"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("preserves unrelated pi-subagents settings while enforcing Forge strict dispatch", async () => {
+  it("leaves legacy pi-subagents settings untouched because Nicobailon does not use them", async () => {
     const { root, service } = await createService();
     await mkdir(join(root, ".pi"), { recursive: true });
-    await writeFile(join(root, ".pi", "subagents.json"), JSON.stringify({ maxConcurrent: 8, widgetMode: "all", fallbackSubagent: "general-purpose" }), { flag: "w" });
+    const legacy = { maxConcurrent: 8, widgetMode: "all", fallbackSubagent: "general-purpose" };
+    await writeFile(join(root, ".pi", "subagents.json"), JSON.stringify(legacy), { flag: "w" });
     const preview = await service.preview(config(), models);
+    expect(preview.changes.some((change) => change.path.endsWith("subagents.json"))).toBe(false);
     await service.apply({ config: config(), expectedPreviewHash: preview.previewHash, availableModels: models });
-    expect(JSON.parse(await readFile(join(root, ".pi", "subagents.json"), "utf8"))).toEqual({
-      maxConcurrent: 8,
-      widgetMode: "all",
-      fallbackSubagent: "none",
-      disableDefaultAgents: false,
-    });
+    expect(JSON.parse(await readFile(join(root, ".pi", "subagents.json"), "utf8"))).toEqual(legacy);
   });
 
   it("normalizes retired Tournament and Task Audit config only at the read seam", async () => {

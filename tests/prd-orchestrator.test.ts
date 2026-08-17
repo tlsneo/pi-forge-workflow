@@ -8,6 +8,7 @@ import type { ForgeConfig } from "../src/config/types.js";
 import { PiSubagentsAdapter, type EventBus } from "../src/subagents/adapter.js";
 import { WorkItemService } from "../src/work-item/service.js";
 import type { ForgePrd } from "../src/work-item/types.js";
+import { emitWorkflowCompletion, installRpcV1, spawnAgent, spawnDescription, spawnModel, spawnTask } from "./helpers/nicobailon-rpc.js";
 
 class FakeBus implements EventBus {
   handlers = new Map<string, Set<(payload: any) => void>>();
@@ -127,24 +128,20 @@ describe("PrdReviewOrchestrator", () => {
     const { repositoryRoot, workItemRoot, service } = await fixture();
     const bus = new FakeBus();
     const spawnRequests: any[] = [];
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => {
-      spawnRequests.push(request);
-      bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${spawnRequests.length}` } });
-    });
+    installRpcV1(bus, { onSpawn: (request) => spawnRequests.push(request), nextId: () => `agent-${spawnRequests.length}` });
     const orchestrator = new PrdReviewOrchestrator(new PiSubagentsAdapter(bus, 100));
 
     const spawns = await orchestrator.startRequiredReviews(workItemRoot, context(repositoryRoot));
     expect(spawns).toHaveLength(3);
     expect(spawns.every((spawn) => spawn.status === "started")).toBe(true);
-    expect(spawnRequests.map((request) => request.type)).toEqual(["forge-reviewer", "forge-reviewer", "forge-reviewer"]);
-    expect(spawnRequests.map((request) => request.options.description).sort()).toEqual(expect.arrayContaining([
+    expect(spawnRequests.map(spawnAgent)).toEqual(["forge-reviewer", "forge-reviewer", "forge-reviewer"]);
+    expect(spawnRequests.map(spawnDescription).sort()).toEqual(expect.arrayContaining([
       expect.stringContaining("prd-1-coverage-1"),
       expect.stringContaining("prd-1-evidence-1"),
       expect.stringContaining("prd-1-architecture-1"),
     ]));
-    expect(spawnRequests.every((request) => request.options.model.id === "audit")).toBe(true);
-    expect(spawnRequests.every((request) => request.prompt.includes("Binding ID:"))).toBe(true);
+    expect(spawnRequests.every((request) => spawnModel(request) === "test/audit")).toBe(true);
+    expect(spawnRequests.every((request) => spawnTask(request).includes("Binding ID:"))).toBe(true);
 
     const state = await service.store.readState();
     expect(Object.keys(state.reviewJobs ?? {})).toHaveLength(3);
@@ -155,15 +152,14 @@ describe("PrdReviewOrchestrator", () => {
     const { repositoryRoot, workItemRoot, service } = await fixture();
     const bus = new FakeBus();
     const descriptions: string[] = [];
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => {
-      descriptions.push(request.options.description);
-      bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${descriptions.length}` } });
+    installRpcV1(bus, {
+      onSpawn: (request) => descriptions.push(spawnDescription(request) ?? ""),
+      nextId: () => `agent-${descriptions.length}`,
     });
     const orchestrator = new PrdReviewOrchestrator(new PiSubagentsAdapter(bus, 100));
     await orchestrator.startRequiredReviews(workItemRoot, context(repositoryRoot));
 
-    bus.emit("subagents:completed", { id: "agent-1", type: "forge-reviewer", description: descriptions[0] });
+    emitWorkflowCompletion(bus, "agent-1");
     await waitFor(async () => Object.values((await service.store.readState()).reviewJobs ?? {}).some((job) => job.binding?.agentId === "agent-4"));
     expect(descriptions).toHaveLength(4);
     const retried = Object.values((await service.store.readState()).reviewJobs ?? {}).find((job) => job.binding?.agentId === "agent-4");
@@ -175,11 +171,12 @@ describe("PrdReviewOrchestrator", () => {
     const { repositoryRoot, workItemRoot, service } = await fixture();
     const bus = new FakeBus();
     const spawned: Array<{ id: string; description: string; model: any }> = [];
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => {
-      const id = `agent-${spawned.length + 1}`;
-      spawned.push({ id, description: request.options.description, model: request.options.model });
-      bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id } });
+    installRpcV1(bus, {
+      onSpawn: (request) => {
+        const id = `agent-${spawned.length + 1}`;
+        spawned.push({ id, description: spawnDescription(request) ?? "", model: spawnModel(request) });
+      },
+      nextId: () => spawned.at(-1)!.id,
     });
     const orchestrator = new PrdReviewOrchestrator(new PiSubagentsAdapter(bus, 100));
     await orchestrator.startRequiredReviews(workItemRoot, context(repositoryRoot));
@@ -204,7 +201,7 @@ describe("PrdReviewOrchestrator", () => {
       });
     }
     for (const agent of spawned.slice(0, 3)) {
-      bus.emit("subagents:completed", { id: agent.id, type: "forge-reviewer", description: agent.description });
+      emitWorkflowCompletion(bus, agent.id);
     }
 
     await waitFor(async () => {
@@ -217,19 +214,14 @@ describe("PrdReviewOrchestrator", () => {
     expect(verifiedState.blockerVerificationJob?.status).toBe("starting");
     expect(spawned).toHaveLength(4);
     expect(spawned[3]?.description).toContain("forge-prd-blocker:");
-    expect(spawned[3]?.model.id).toBe("verifier");
+    expect(spawned[3]?.model).toBe("test/verifier");
   }, 30_000);
 
   it("stops known live Review Bindings before explicit coordinator takeover", async () => {
     const { repositoryRoot, workItemRoot, service } = await fixture();
     const bus = new FakeBus();
     let spawned = 0;
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => {
-      spawned += 1;
-      bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${spawned}` } });
-    });
-    bus.on("subagents:rpc:stop", (request) => bus.emit(`subagents:rpc:stop:reply:${request.requestId}`, { success: true }));
+    installRpcV1(bus, { nextId: () => `agent-${++spawned}` });
     const orchestrator = new PrdReviewOrchestrator(new PiSubagentsAdapter(bus, 100));
     await orchestrator.startRequiredReviews(workItemRoot, context(repositoryRoot));
     const resumed = await orchestrator.resumeReviews(workItemRoot, context(repositoryRoot), "Previous coordinator process exited");

@@ -19,17 +19,22 @@ function profileFor(config: ForgeConfig, route: string, fallbackRoute: string): 
 
 function exploreTemplate(profile: ForgeModelProfile): string {
   return `---
+name: Explore
 description: Fast read-only repository exploration using the Forge simple model profile
-display_name: Explore
-tools: read, bash, grep, find, ls
-extensions: false
-skills: false
+tools: read, grep, find, ls
 model: ${profile.model}
 thinking: ${profile.thinking}
-max_turns: ${profile.maxTurns}
-prompt_mode: replace
-inherit_context: false
-allowed_subagents: none
+systemPromptMode: replace
+inheritProjectContext: false
+inheritSkills: false
+defaultContext: fresh
+async: true
+timeoutMs: 3600000
+turnBudget: {"maxTurns":${profile.maxTurns},"graceTurns":0}
+acceptance: {"level":"none","reason":"Forge Runtime owns structured verification and acceptance"}
+acceptanceRole: read-only
+completionGuard: false
+maxSubagentDepth: 0
 ---
 
 You are a fast read-only repository explorer. Answer one bounded lookup with targeted searches. Report relevant \`path#Symbol\` facts, direct consumers, test seams, and unresolved unknowns. Do not design the change or modify files.
@@ -38,17 +43,22 @@ You are a fast read-only repository explorer. Answer one bounded lookup with tar
 
 function planTemplate(profile: ForgeModelProfile): string {
   return `---
+name: Plan
 description: Read-only implementation planning using the Forge complex model profile
-display_name: Plan
 tools: read, bash, grep, find, ls
-extensions: false
-skills: false
 model: ${profile.model}
 thinking: ${profile.thinking}
-max_turns: ${profile.maxTurns}
-prompt_mode: replace
-inherit_context: false
-allowed_subagents: none
+systemPromptMode: replace
+inheritProjectContext: false
+inheritSkills: false
+defaultContext: fresh
+async: true
+timeoutMs: 3600000
+turnBudget: {"maxTurns":${profile.maxTurns},"graceTurns":0}
+acceptance: {"level":"none","reason":"Forge Runtime owns structured verification and acceptance"}
+acceptanceRole: read-only
+completionGuard: false
+maxSubagentDepth: 0
 ---
 
 You are a read-only software planner. Build an evidence-backed implementation plan from the request and repository state. Trace affected interfaces, dependencies, risks, migration, and verification seams. State missing evidence explicitly.

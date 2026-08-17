@@ -124,7 +124,7 @@ export class AuditRemediationOrchestrator {
     ].join("\n");
     try {
       const protocol = await this.adapter.ping();
-      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+      if (protocol < 1) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt, description: verifierDescription(binding.id), model, thinkingLevel: binding.thinking, maxTurns: binding.maxTurns, cwd: manifest.workspaceRoot });
       await runtime.bindAuditBlockerVerifier(binding.id, agentId);
       this.agents.set(agentId, location);
@@ -209,7 +209,7 @@ export class AuditRemediationOrchestrator {
     ].join("\n");
     try {
       const protocol = await this.adapter.ping();
-      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+      if (protocol < 1) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({ type: "forge-designer", prompt, description: `forge-remediation-planner:${binding.id}`, model, thinkingLevel: binding.thinking, maxTurns: binding.maxTurns, cwd: manifest.workspaceRoot });
       await runtime.bindRemediationPlanner(binding.id, agentId);
       this.agents.set(agentId, location);
@@ -274,7 +274,7 @@ export class AuditRemediationOrchestrator {
     const prompt = remediationPreflightPrompt({ runtimeRoot, bindingId: binding.id, proposal, service, remediation });
     try {
       const protocol = await this.adapter.ping();
-      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+      if (protocol < 1) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt, description: preflightDescription(binding.id, proposal.issueId, proposal.generation), model, thinkingLevel: binding.thinking, maxTurns: binding.maxTurns, cwd: proposal.source.repositoryRoot });
       await service.bindAgent(binding.id, agentId);
       this.agents.set(agentId, location);

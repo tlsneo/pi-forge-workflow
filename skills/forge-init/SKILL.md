@@ -28,7 +28,7 @@ Sections, in order:
 4. **Model Profiles** — present the registry-backed simple, medium, complex, audit, and verifier recommendations. Ask whether to accept them as a set before offering per-profile edits.
 5. **Audit Assurance** — recommend Standard: one independent reviewer per PRD axis and a different-model Blocker Verifier when available.
 6. **Commands** — present detected typecheck, test, lint, and build commands for confirmation.
-7. **Agent Templates** — present the recommended project Agent directory and any existing-file conflicts. Install the Task Worker, Remediation Planner, and Reviewer templates plus project overrides that bind `Explore` to the `interactiveExplore`/simple profile and `Plan` to the `interactivePlan`/complex profile. Merge `.pi/subagents.json` with fail-closed unknown-type dispatch (`fallbackSubagent: none`) while keeping default agents enabled; project `Explore` and `Plan` overrides supply their Forge-selected models.
+7. **Agent Templates** — present the recommended project Agent directory and any existing-file conflicts. Install the Nicobailon-compatible version-5 Task Worker, Remediation Planner, and Reviewer templates plus project overrides that bind `Explore` to the `interactiveExplore`/simple profile and `Plan` to the `interactivePlan`/complex profile. Generated templates use strict tool allowlists, fresh context, explicit non-isolated execution, no inherited project context or skills, and zero nested Subagent depth. Legacy `.pi/subagents.json` is not managed or treated as authoritative.
 8. **Repository Context** — present discovered `CONTEXT.md`, `CONTEXT-MAP.md`, nested Context files, ADR directories, architecture docs, and `docs/agents/domain.md`. Reuse existing sources; do not invent domain content. Ask only when multiple unindexed Context files make ownership ambiguous.
 9. **Repository Instructions** — use Pi's active context file deterministically: `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`; create `AGENTS.md` when none exists. Do not ask in the normal case. Require explicit confirmation before writing `AGENTS.override.md`, and report any lower-priority files shadowed by the selected file.
 
@@ -43,7 +43,7 @@ Call `forge_init_preview`. Show:
 - files to create or update;
 - unchanged files;
 - template conflicts;
-- strict pi-subagents settings and preserved unrelated values;
+- Nicobailon-compatible version-5 Agent templates and any untouched legacy `.pi/subagents.json` file;
 - the selected Repository Context sources and any missing paths;
 - the managed Forge block in Pi's selected repository instruction file;
 - `.gitignore` change when the Control Root itself is a Git Working Tree, or the explicit warning that no Git ignore update is needed;
@@ -59,7 +59,7 @@ Completion criterion: the user explicitly approves the current preview hash and 
 
 Call `forge_init_apply` with the approved Preview Hash. Runtime validates paths, models, Thinking, workspace combinations, audit minima, and stale previews; writes `.pi/forge.json` atomically; saves a Config Generation and Receipt; installs versioned templates; updates only the managed Forge instruction block; and updates `.gitignore` when configured.
 
-Then call `forge_init_status` and report the config path, generation, hash, template status, strict pi-subagents status, repository instruction status, tracker mode, workspace mode, and selected model profiles.
+Then call `forge_init_status` and report the config path, generation, hash, Nicobailon Agent-template status, repository instruction status, tracker mode, workspace mode, and selected model profiles. Legacy `.pi/subagents.json` status is informational only.
 
 Completion criterion: status is configured, all required templates and the managed repository instruction block match, and the applied Receipt references the approved Preview Hash.
 

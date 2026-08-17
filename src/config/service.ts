@@ -21,20 +21,6 @@ async function readOptional(path: string): Promise<string | undefined> {
   return (await exists(path)) ? readFile(path, "utf8") : undefined;
 }
 
-function strictSubagentsSettings(current: string | undefined): string {
-  let parsed: Record<string, unknown> = {};
-  if (current) {
-    try {
-      const value = JSON.parse(current) as unknown;
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("must be a JSON object");
-      parsed = value as Record<string, unknown>;
-    } catch (error) {
-      throw new Error(`Cannot configure strict pi-subagents settings: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  return `${JSON.stringify({ ...parsed, fallbackSubagent: "none", disableDefaultAgents: false }, null, 2)}\n`;
-}
-
 function changeFor(path: string, current: string | undefined, next: string, conflict = false, reason?: string): ConfigFileChange {
   const currentHash = current === undefined ? undefined : stableHash(current);
   const nextHash = stableHash(next);
@@ -104,16 +90,6 @@ export class ForgeConfigService {
 
     const instructionPlans = await planManagedInstructions(this.controlRoot, currentConfig, config);
     for (const plan of instructionPlans) changes.push(changeFor(plan.path, plan.current, plan.next, plan.conflict, plan.reason));
-
-    const subagentsPath = join(this.controlRoot, ".pi", "subagents.json");
-    const currentSubagents = await readOptional(subagentsPath);
-    changes.push(changeFor(
-      subagentsPath,
-      currentSubagents,
-      strictSubagentsSettings(currentSubagents),
-      false,
-      "Keep default agents available, fail closed on unknown types, and use project Explore and Plan overrides",
-    ));
 
     const controlGitMarker = join(this.controlRoot, ".git");
     if (config.artifacts.gitPolicy === "ignore" && await exists(controlGitMarker)) {
@@ -199,14 +175,6 @@ export class ForgeConfigService {
       }
     }
 
-    const subagentsPath = join(this.controlRoot, ".pi", "subagents.json");
-    const currentSubagents = await readOptional(subagentsPath);
-    const desiredSubagents = strictSubagentsSettings(currentSubagents);
-    if (currentSubagents === undefined || stableHash(currentSubagents) !== stableHash(desiredSubagents)) {
-      await atomicWriteText(subagentsPath, desiredSubagents);
-      changedFiles.push(subagentsPath);
-    }
-
     if (preview.config.artifacts.gitPolicy === "ignore" && await exists(join(this.controlRoot, ".git"))) {
       const gitignorePath = join(this.controlRoot, ".gitignore");
       const current = await readOptional(gitignorePath) ?? "";
@@ -254,16 +222,7 @@ export class ForgeConfigService {
       return { path, installed: current !== undefined, matches: current?.includes(renderForgeInstructionBlock(config)) ?? false };
     })() : undefined;
     const subagentsPath = join(this.controlRoot, ".pi", "subagents.json");
-    const subagentsContent = await readOptional(subagentsPath);
-    const subagentsStatus = await (async () => {
-      if (!subagentsContent) return { path: subagentsPath, strict: false };
-      try {
-        const settings = JSON.parse(subagentsContent) as Record<string, unknown>;
-        return { path: subagentsPath, strict: settings.fallbackSubagent === "none" && settings.disableDefaultAgents === false };
-      } catch {
-        return { path: subagentsPath, strict: false };
-      }
-    })();
+    const subagentsStatus = { path: subagentsPath, strict: false };
     const context = config.repositoryContext;
     const repositoryContextStatus = context ? await (async () => {
       const configuredPaths = [...new Set([

@@ -15,6 +15,7 @@ import { TasksService } from "../src/tasks/service.js";
 import type { MicroTaskDraft, SliceDraft } from "../src/tasks/types.js";
 import { WorkItemService } from "../src/work-item/service.js";
 import type { ForgePrd, ReviewAxis } from "../src/work-item/types.js";
+import { installRpcV1, spawnAgent, spawnDescription } from "./helpers/nicobailon-rpc.js";
 
 const roots: string[] = [];
 const revision = "abc123";
@@ -191,14 +192,13 @@ describe("TasksService", () => {
     const { repositoryRoot, workItemRoot, tasks } = await fixture();
     const bus = new FakeBus();
     const spawns: any[] = [];
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => { spawns.push(request); bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${spawns.length}` } }); });
+    installRpcV1(bus, { onSpawn: (request) => spawns.push(request), nextId: () => `agent-${spawns.length}` });
     const orchestrator = new TaskPreflightOrchestrator(new PiSubagentsAdapter(bus, 100));
     const input = plan();
     const started = await orchestrator.propose({ workItemRoot, issueId: "I001", slices: input.slices, tasks: input.tasks, ctx: context(repositoryRoot) });
     expect(started.status).toBe("started");
-    expect(spawns[0].type).toBe("forge-reviewer");
-    expect(spawns[0].options.description).toContain("forge-task-preflight:");
+    expect(spawnAgent(spawns[0])).toBe("forge-reviewer");
+    expect(spawnDescription(spawns[0])).toContain("forge-task-preflight:");
     expect((await tasks.status("I001")).manifest).toBeUndefined();
 
     const preflight = await new TaskPreflightService(workItemRoot, "I001").status();
@@ -227,8 +227,7 @@ describe("TasksService", () => {
     const { repositoryRoot, workItemRoot, tasks } = await fixture();
     const bus = new FakeBus();
     let spawnCount = 0;
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${++spawnCount}` } }));
+    installRpcV1(bus, { nextId: () => `agent-${++spawnCount}` });
     const orchestrator = new TaskPreflightOrchestrator(new PiSubagentsAdapter(bus, 100));
     const input = plan();
     await orchestrator.propose({ workItemRoot, issueId: "I001", slices: input.slices, tasks: input.tasks, ctx: context(repositoryRoot) });

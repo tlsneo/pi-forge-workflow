@@ -26,14 +26,14 @@ Forge treats the workflow itself as a deterministic state machine. The language 
 After this repository is hosted, install both packages:
 
 ```bash
-pi install npm:@tintinweb/pi-subagents
+pi install npm:pi-subagents@0.50.0
 pi install https://github.com/tlsneo/pi-forge-workflow
 ```
 
 A tag or commit may be pinned:
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.8.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v1.0.0
 ```
 
 ### Install from a local checkout
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 For project-local Pi installation, add `-l` to `pi install`.
 
-> This repository currently has `"private": true` and version `0.8.0`, so the documented distribution path is Git or a local checkout, not npm publication.
+> This repository currently has `"private": true` and version `1.0.0`, so the documented Forge distribution path is Git or a local checkout, not npm publication.
 
 ## Public workflow
 
@@ -222,7 +222,7 @@ Every Task contract carries a fixed policy:
 
 The accompanying **Proportionality Policy**, informed by [HERO — Anti-OverDefense](https://github.com/wanshuiyin/HERO-Anti-OverDefense), bounds proposed work without suppressing discovery: every guard, compatibility path, abstraction, dependency, artifact, version, check, audit Finding, or repair must trace to frozen requirements, a documented repository rule, or a failure reachable through supported use. Checks must settle a live uncertainty or verify a frozen obligation and change the next action on failure. Explicit security, migration, compatibility, verification, review, and mechanical integrity requirements remain mandatory. Passing with no Findings is valid, and execution stops when the requested artifact and authoritative verification are complete.
 
-Subagent failures are classified separately from product semantics. Recognizable `503`/service-capacity failures, safe RPC timeouts, transport failures, and terminated lifecycle bindings create append-only `infrastructure_retry_scheduled` events and use a separate bounded infrastructure budget. They do not consume Worker or Reviewer semantic attempts. A timeout after a spawn request was emitted has an unknowable outcome under pi-subagents RPC v2, so Forge records `infrastructure_spawn_outcome_unknown` and fails closed rather than spawning a possible duplicate live Agent. Exhaustion ends in explicit `infrastructure_failed` state rather than a fabricated product Blocker.
+Subagent failures are classified separately from product semantics. Forge 1.0.0 uses Nicobailon pi-subagents RPC v1 and launches one explicit asynchronous Workflow with `isolation:"none"`, `context:"fresh"`, the exact cwd/model/thinking/turn budget, and a one-hour runtime timeout. The Adapter correlates `subagent:async-complete` with the local Binding metadata rather than depending on child prose. Recognizable `503`/service-capacity failures, safe RPC timeouts, transport failures, and terminated lifecycle bindings create append-only `infrastructure_retry_scheduled` events and use a separate bounded infrastructure budget. They do not consume Worker or Reviewer semantic attempts. A timeout after a spawn request was emitted has an unknowable outcome, so Forge records `infrastructure_spawn_outcome_unknown` and fails closed rather than spawning a possible duplicate live Workflow. Exhaustion ends in explicit `infrastructure_failed` state rather than a fabricated product Blocker.
 
 Standard and High Assurance final Auditors now receive compact, immutable axis surfaces with independent Surface Hashes. After a verified repair, Runtime deterministically invalidates Acceptance / Integration plus the axes that originated confirmed Findings, appends the repair evidence only to those surfaces, and carries a passed axis only when its recomputed Surface Hash is unchanged. Rejected Findings similarly rerun only their originating axes. Carried reviews remain visible in the final Receipt through `carriedFrom` evidence.
 
@@ -295,7 +295,7 @@ Architecture changes, public Interface changes, scope changes, missing evidence,
 
 - Node.js `>= 22.19.0`.
 - [Pi](https://pi.dev) with at least one available reasoning-capable model.
-- [`@tintinweb/pi-subagents`](https://github.com/tintinweb/pi-subagents) with Cross-extension RPC protocol v2.
+- [`pi-subagents@0.50.0`](https://github.com/nicobailon/pi-subagents) with local Cross-extension RPC protocol v1.
 - A target Git repository with at least one commit.
 - A clean Git workspace before Task execution.
 - A persistent interactive Pi session while background Workers and Reviewers are running.
@@ -324,7 +324,6 @@ The normal setup creates or updates:
 
 ```text
 .pi/forge.json
-.pi/subagents.json
 .pi/agents/*.md
 AGENTS.md or the active Pi context file
 .gitignore
@@ -476,7 +475,7 @@ After changing Extension or Skill files in a running Pi session, use `/reload`.
 - Evidence mapping and minimum-sufficient design selection run inside `forge-prd`; there are no separate Map, Design, Options, or Spec artifacts.
 - There is no Forge-specific progress UI.
 - Automatic lifecycle continuation requires a live Pi session; a one-shot `pi -p` process is unsuitable for long-running background execution.
-- Recovery relies on Runtime state and lifecycle events because richer `pi-subagents` status/resume RPC is not yet available. Failures known to occur before spawn are retried as infrastructure. A timed-out spawn request is fail-closed because Forge cannot query whether the remote process started; an already-running Agent still requires an eventual lifecycle event.
+- Recovery relies on Forge Runtime state plus Nicobailon `subagent:async-complete`. Forge intentionally does not auto-resume or respawn an uncertain Workflow. Failures known to occur before spawn are retried as infrastructure; a timed-out spawn request is fail-closed because its launch outcome is unknown.
 - The project is pre-release and its artifact schemas may still change.
 
 ## Security model

@@ -27,7 +27,7 @@ async function runtime() {
 describe("Subagent infrastructure failure policy", () => {
   it("classifies only recognizable transport, service, RPC, and lifecycle failures as infrastructure", () => {
     expect(classifySubagentFailure("503 Service Unavailable", "spawn")).toMatchObject({ classification: "infrastructure", kind: "service_unavailable" });
-    expect(classifySubagentFailure("pi-subagents RPC timeout: subagents:rpc:spawn", "spawn")).toMatchObject({ classification: "infrastructure", kind: "rpc_timeout" });
+    expect(classifySubagentFailure("pi-subagents RPC timeout: subagents:rpc:v1:request (spawn)", "spawn")).toMatchObject({ classification: "infrastructure", kind: "rpc_timeout" });
     expect(classifySubagentFailure("ECONNRESET while reading response", "lifecycle")).toMatchObject({ classification: "infrastructure", kind: "transport" });
     expect(classifySubagentFailure("Reviewer completed without a structured result", "lifecycle")).toMatchObject({ classification: "semantic" });
   });
@@ -60,7 +60,7 @@ describe("Subagent infrastructure failure policy", () => {
       startedGeneration: state.generation,
     });
     await service.claimTask(contract.id, binding);
-    const failed = await service.markSpawnFailed(contract.id, "pi-subagents RPC timeout: subagents:rpc:spawn");
+    const failed = await service.markSpawnFailed(contract.id, "pi-subagents RPC timeout: subagents:rpc:v1:request (spawn)");
     expect(failed.tasks[contract.id]?.status).toBe("infrastructure_failed");
     expect(failed.tasks[contract.id]?.attempt).toBe(1);
     expect((await service.store.readEvents()).at(-1)?.type).toBe("infrastructure_spawn_outcome_unknown");

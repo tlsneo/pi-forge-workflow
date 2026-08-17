@@ -123,7 +123,7 @@ export class TaskConformanceOrchestrator {
     this.bindings.set(binding.id, location);
     try {
       const protocol = await this.adapter.ping();
-      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+      if (protocol < 1) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({
         type: "forge-reviewer",
         prompt: prompt(runtimeRoot, taskId, job, binding.id),

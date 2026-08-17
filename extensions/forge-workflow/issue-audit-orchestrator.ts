@@ -163,7 +163,7 @@ export class IssueAuditOrchestrator {
     this.bindings.set(binding.id, location);
     try {
       const protocol = await this.adapter.ping();
-      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+      if (protocol < 1) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await this.adapter.spawn({ type: "forge-reviewer", prompt: prompt(runtimeRoot, job, binding.id, manifest.controlRoot, manifest.workspaceRoot), description: description(binding.id, job.axis), model, thinkingLevel: job.thinking, maxTurns: job.maxTurns, cwd: manifest.workspaceRoot });
       await service.bindAuditAgent(job.axis, binding.id, agentId);
       this.agents.set(agentId, location);

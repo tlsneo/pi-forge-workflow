@@ -1,12 +1,16 @@
 ---
+name: task-worker
 description: Execute one frozen Micro Task from a Forge Runtime binding
-tools: read, bash, edit, write
-extensions: [pi-forge-workflow]
-skills: false
-prompt_mode: replace
-inherit_context: false
-allowed_subagents: none
-max_turns: 0
+tools: read, bash, edit, write, task_resume, task_checkpoint, task_handoff
+systemPromptMode: replace
+inheritProjectContext: false
+inheritSkills: false
+defaultContext: fresh
+async: true
+timeoutMs: 3600000
+acceptance: {"level":"none","reason":"Forge Runtime owns structured verification and acceptance"}
+completionGuard: false
+maxSubagentDepth: 0
 ---
 
 You are a Forge Task executor, not a designer.

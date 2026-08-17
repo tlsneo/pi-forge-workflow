@@ -61,7 +61,7 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
   },
   "agents": {
     "directory": ".pi/agents",
-    "templateVersion": 4
+    "templateVersion": 5
   },
   "instructions": {
     "file": "AGENTS.md",
@@ -78,7 +78,7 @@ The fixed project config path is `.pi/forge.json`. `artifacts.root` controls whe
 }
 ```
 
-The current release supports only Local Issue artifacts and `shared-serial + isolationBackend: none + poolSize: 1`. External tracker publication and isolated workspace pools are not configurable until their execution adapters exist. Existing Configs without `taskConformanceAudit` route it in memory to `task.simple`; Forge does not rewrite the user's Config merely to add this compatibility default.
+The current release supports only Local Issue artifacts and `shared-serial + isolationBackend: none + poolSize: 1`. Formal Subagents launch through Nicobailon RPC v1 with `async:true`, `isolation:"none"`, and `context:"fresh"`; generated Agent template version 5 uses strict tool allowlists and `maxSubagentDepth:0`. Legacy `.pi/subagents.json` is neither generated nor authoritative. External tracker publication and isolated workspace pools are not configurable until their execution adapters exist. Existing Configs without `taskConformanceAudit` route it in memory to `task.simple`; Forge does not rewrite the user's Config merely to add this compatibility default.
 
 `review.preset` is frozen into the Issue Runtime when its Task Plan is created. Every new Task Runtime requires one pre-commit Task Conformance Audit per Task. `fast` completes mechanically after audited Task Receipts and all Slice Gates pass; `standard` and `high-assurance` retain final Issue Audits. Existing Runtimes without this field default to `standard`.
 

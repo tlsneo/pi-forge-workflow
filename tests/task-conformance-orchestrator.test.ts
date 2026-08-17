@@ -9,6 +9,7 @@ import { TaskExecutionService } from "../src/execution/service.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import type { TaskContract } from "../src/runtime/types.js";
 import { PiSubagentsAdapter, type EventBus } from "../src/subagents/adapter.js";
+import { installRpcV1, spawnAgent, spawnDescription, spawnModel, spawnTask } from "./helpers/nicobailon-rpc.js";
 
 class FakeBus implements EventBus {
   handlers = new Map<string, Set<(payload: any) => void>>();
@@ -68,18 +69,20 @@ describe("TaskConformanceOrchestrator", () => {
     expect(git(repositoryRoot, "rev-parse", "HEAD")).toBe(baseline);
     const bus = new FakeBus();
     const spawns: any[] = [];
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => { spawns.push(request); bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: "auditor-1" } }); });
+    installRpcV1(bus, { onSpawn: (request) => spawns.push(request), nextId: () => "auditor-1" });
     const started = await new TaskConformanceOrchestrator(new PiSubagentsAdapter(bus, 100)).start(runtimeRoot, "T001", context(repositoryRoot));
 
     expect(started).toMatchObject({ taskId: "T001", agentId: "auditor-1", status: "started" });
     expect(spawns).toHaveLength(1);
-    expect(spawns[0]).toMatchObject({ type: "forge-reviewer", options: { cwd: repositoryRoot, description: expect.stringContaining("forge-task-conformance"), model: { provider: "test", id: "audit" } } });
+    expect(spawnAgent(spawns[0])).toBe("forge-reviewer");
+    expect(spawns[0].params.cwd).toBe(repositoryRoot);
+    expect(spawnDescription(spawns[0])).toContain("forge-task-conformance");
+    expect(spawnModel(spawns[0])).toBe("test/audit");
     expect((await runtime.status()).tasks.T001?.conformanceJob?.surface).toMatchObject({ workItemId: "work-item-test", issueId: "I001", taskId: "T001" });
-    expect(spawns[0].prompt).toContain("forge_run_task_conformance_submit");
-    expect(spawns[0].prompt).toContain("every BP-xx Step");
-    expect(spawns[0].prompt).toContain("Proportionality Policy");
-    expect(spawns[0].prompt).toContain("Passing with no findings is valid");
+    expect(spawnTask(spawns[0])).toContain("forge_run_task_conformance_submit");
+    expect(spawnTask(spawns[0])).toContain("every BP-xx Step");
+    expect(spawnTask(spawns[0])).toContain("Proportionality Policy");
+    expect(spawnTask(spawns[0])).toContain("Passing with no findings is valid");
     expect((await runtime.status()).tasks.T001).toMatchObject({ status: "reviewing", conformanceJob: { status: "starting", attempt: 1, binding: { agentId: "auditor-1" } } });
   });
 });

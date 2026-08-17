@@ -248,7 +248,7 @@ export default function taskWorkflowExtension(pi: ExtensionAPI) {
 
     try {
       const protocol = await adapter.ping();
-      if (protocol < 2) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
+      if (protocol < 1) throw new Error(`Unsupported pi-subagents RPC protocol: ${protocol}`);
       const agentId = await adapter.spawn({
         type: "task-worker",
         prompt,

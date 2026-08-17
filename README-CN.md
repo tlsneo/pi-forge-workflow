@@ -26,14 +26,14 @@ Forge 把工作流本身视为确定性状态机。LLM 负责提交结构化 Pro
 仓库托管后，安装两个 Package：
 
 ```bash
-pi install npm:@tintinweb/pi-subagents
+pi install npm:pi-subagents@0.50.0
 pi install https://github.com/tlsneo/pi-forge-workflow
 ```
 
 也可以固定 Tag 或 Commit：
 
 ```bash
-pi install https://github.com/tlsneo/pi-forge-workflow@v0.8.0
+pi install https://github.com/tlsneo/pi-forge-workflow@v1.0.0
 ```
 
 ### 从本地 Checkout 安装
@@ -47,7 +47,7 @@ pi install /absolute/path/to/pi-forge-workflow
 
 如果希望只安装到当前项目，给 `pi install` 增加 `-l`。
 
-> 当前 `package.json` 仍是 `"private": true` 和版本 `0.8.0`，因此文档推荐 Git 或本地安装，不是 npm 发布。
+> 当前 Forge `package.json` 仍是 `"private": true` 和版本 `1.0.0`，因此 Forge 文档推荐 Git 或本地安装，不是 npm 发布。
 
 ## 公开工作流
 
@@ -222,7 +222,7 @@ tasks/T003/TASK-V001.md
 
 配套的 **Proportionality Policy（比例原则）** 参考了 [HERO — Anti-OverDefense](https://github.com/wanshuiyin/HERO-Anti-OverDefense)，只约束提出的工作，不压制真实问题的发现：每个 Guard、兼容路径、抽象、依赖、Artifact、版本、检查、Audit Finding 或修复都必须追溯到冻结需求、仓库明确规则，或经受支持用法真实可达的失败。检查必须解决仍然活着的不确定性或验证冻结义务，并在失败时改变下一步动作。明确要求的安全、迁移、兼容、Verification、Review 和机械完整性工作仍然必须执行。没有 Finding 的通过结果是有效结果；请求的 Artifact 和权威 Verification 完成后即停止加固。
 
-Subagent 失败与产品语义失败分开记录。可识别的 `503` / 服务容量、安全 RPC Timeout、Transport Failure 和已终止 Lifecycle 会写入追加式 `infrastructure_retry_scheduled` Event，并使用独立的有界 Infrastructure Budget，不消耗 Worker 或 Reviewer 的语义尝试次数。Spawn 请求发出后的 RPC Timeout 在 pi-subagents RPC v2 下结果不可知，因此 Forge 写入 `infrastructure_spawn_outcome_unknown` 并 Fail-closed，避免启动重复 Live Agent。预算耗尽后进入明确的 `infrastructure_failed`，不会虚构产品 Blocker。
+Subagent 失败与产品语义失败分开记录。Forge 1.0.0 使用 Nicobailon pi-subagents RPC v1，并显式启动一个异步 Workflow，固定 `isolation:"none"`、`context:"fresh"`、精确 cwd/model/thinking/turn budget 和一小时 Runtime Timeout。Adapter 使用本地 Binding Metadata 关联 `subagent:async-complete`，不依赖 Child 自然语言。可识别的 `503` / 服务容量、安全 RPC Timeout、Transport Failure 和已终止 Lifecycle 会写入追加式 `infrastructure_retry_scheduled` Event，并使用独立的有界 Infrastructure Budget，不消耗 Worker 或 Reviewer 的语义尝试次数。Spawn 请求发出后的 RPC Timeout 结果不可知，因此 Forge 写入 `infrastructure_spawn_outcome_unknown` 并 Fail-closed，避免启动重复 Live Workflow。预算耗尽后进入明确的 `infrastructure_failed`，不会虚构产品 Blocker。
 
 Standard 和 High Assurance 的 Final Auditor 现在只接收紧凑、不可变、按 Axis 划分的 Review Surface 和独立 Surface Hash。验证后的修复会确定性失效 Acceptance / Integration 以及产生 Confirmed Finding 的 Axis；Runtime 只把 Repair Evidence 追加到这些 Surface，并且仅在重新计算的 Surface Hash 未变化时携带 Passed Axis。被 Verifier 拒绝的 Finding 也只重跑其来源 Axis。携带的 Review 通过 `carriedFrom` Evidence 进入 Final Receipt。
 
@@ -295,7 +295,7 @@ Audit Finding
 
 - Node.js `>= 22.19.0`。
 - [Pi](https://pi.dev)，并至少配置一个支持 Reasoning 的可用模型。
-- [`@tintinweb/pi-subagents`](https://github.com/tintinweb/pi-subagents)，Cross-extension RPC Protocol 版本至少为 v2。
+- [`pi-subagents@0.50.0`](https://github.com/nicobailon/pi-subagents)，使用本地 Cross-extension RPC Protocol v1。
 - 目标目录必须是至少有一个 Commit 的 Git Repository。
 - Task 执行前 Git Workspace 必须干净。
 - 后台 Worker 和 Reviewer 运行时，需要保持一个持久的 Pi Interactive Session。
@@ -324,7 +324,6 @@ poolSize: 1
 
 ```text
 .pi/forge.json
-.pi/subagents.json
 .pi/agents/*.md
 AGENTS.md 或当前生效的 Pi Context File
 .gitignore
@@ -476,7 +475,7 @@ pi -e ./extensions/forge-workflow/index.ts
 - Evidence Mapping 和最小充分 Design Selection 已内置在 `forge-prd`；不存在独立 Map、Design、Options 或 Spec Artifact。
 - 尚无 Forge 专用进度 UI。
 - 自动生命周期推进要求 Pi Session 保持运行；一次性 `pi -p` 不适合长期后台执行。
-- 由于 `pi-subagents` 尚无更完整的 Status / Resume RPC，恢复依赖 Runtime State 和 Lifecycle Event。已知发生在 Spawn 前的失败可按 Infrastructure Retry；Spawn 请求 Timeout 后 Forge 无法查询远端进程是否已启动，因此必须 Fail-closed，已经运行的 Agent仍需要最终 Lifecycle Event。
+- 恢复依赖 Forge Runtime State 和 Nicobailon `subagent:async-complete`。Forge 刻意不会自动 Resume 或重新 Spawn 结果不确定的 Workflow。已知发生在 Spawn 前的失败可按 Infrastructure Retry；Spawn 请求 Timeout 后由于启动结果未知，必须 Fail-closed。
 - 项目仍处于 Pre-release，Artifact Schema 可能继续变化。
 
 ## 安全模型

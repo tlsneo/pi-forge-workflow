@@ -8,6 +8,7 @@ import type { ForgeConfig } from "../src/config/types.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { stableHash } from "../src/runtime/hash.js";
 import { PiSubagentsAdapter, type EventBus } from "../src/subagents/adapter.js";
+import { installRpcV1, RPC_V1_REQUEST, rpcV1Failure, rpcV1Success, spawnAgent, spawnModel, spawnTask } from "./helpers/nicobailon-rpc.js";
 
 class FakeBus implements EventBus {
   handlers = new Map<string, Set<(payload: any) => void>>();
@@ -48,8 +49,10 @@ describe("AuditRemediationOrchestrator", () => {
       state.auditBlockerVerifierJob = { id: "verifier", status: "completed", attempt: 1, maxAttempts: 2, findingHash: "finding", findings: [{ findingId: "F-1", axis: "standards", auditBindingId: "audit", finding: { id: "F-1", severity: "blocker", message: "broken", evidence: ["src/x.ts#x"], violatedRule: "rule", verification: "read" } }], model: "test/verifier", thinking: "high", maxTurns: 20, configHash: "config", result: { bindingId: "verify-binding", findingHash: "finding", results: [{ findingId: "F-1", status: "confirmed", evidence: ["src/x.ts#x"], rationale: "confirmed", missingEvidence: [] }], submittedAt: new Date().toISOString() } };
     });
     const bus = new FakeBus();
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: false, error: "spawn unavailable" }));
+    bus.on(RPC_V1_REQUEST, (request) => {
+      if (request.method === "ping") rpcV1Success(bus, request, { version: 1 });
+      if (request.method === "spawn") rpcV1Failure(bus, request, "execution_failed", "spawn unavailable");
+    });
     const orchestrator = new AuditRemediationOrchestrator(new PiSubagentsAdapter(bus, 100));
     const result = await orchestrator.startPlanner(runtimeRoot, context(repositoryRoot));
     expect(result.status).toBe("retry_ready");
@@ -89,13 +92,12 @@ describe("AuditRemediationOrchestrator", () => {
 
     const bus = new FakeBus();
     const spawns: any[] = [];
-    bus.on("subagents:rpc:ping", (request) => bus.emit(`subagents:rpc:ping:reply:${request.requestId}`, { success: true, data: { version: 2 } }));
-    bus.on("subagents:rpc:spawn", (request) => { spawns.push(request); bus.emit(`subagents:rpc:spawn:reply:${request.requestId}`, { success: true, data: { id: `agent-${spawns.length}` } }); });
+    installRpcV1(bus, { onSpawn: (request) => spawns.push(request), nextId: () => `agent-${spawns.length}` });
     const orchestrator = new AuditRemediationOrchestrator(new PiSubagentsAdapter(bus, 100));
     const verifier = await orchestrator.startVerifier(runtimeRoot, context(repositoryRoot));
     expect(verifier.status).toBe("started");
-    expect(spawns[0].type).toBe("forge-reviewer");
-    expect(spawns[0].options.model.id).toBe("verifier");
+    expect(spawnAgent(spawns[0])).toBe("forge-reviewer");
+    expect(spawnModel(spawns[0])).toBe("test/verifier");
 
     const verifierState = await runtime.status();
     const result = await orchestrator.submitVerification(runtimeRoot, verifierState.auditBlockerVerifierJob!.binding!.id, [{ findingId: "ARCH-1", status: "confirmed", evidence: ["src/config.ts#AppConfig"], rationale: "The final code mutates shared state", missingEvidence: [] }], context(repositoryRoot));
@@ -105,11 +107,11 @@ describe("AuditRemediationOrchestrator", () => {
     expect(verificationReference).not.toHaveProperty("results");
     const verificationArtifact = JSON.parse(await readFile(join(runtimeRoot, verificationReference.artifactPath!), "utf8"));
     expect(verificationArtifact.results).toHaveLength(1);
-    expect(spawns[1].type).toBe("forge-designer");
-    expect(spawns[1].prompt).toContain("Frozen PRD:");
-    expect(spawns[1].prompt).toContain("Frozen Issue:");
-    expect(spawns[1].prompt).toContain("Proportionality Policy");
-    expect(spawns[1].prompt).toContain("live uncertainty");
+    expect(spawnAgent(spawns[1])).toBe("forge-designer");
+    expect(spawnTask(spawns[1])).toContain("Frozen PRD:");
+    expect(spawnTask(spawns[1])).toContain("Frozen Issue:");
+    expect(spawnTask(spawns[1])).toContain("Proportionality Policy");
+    expect(spawnTask(spawns[1])).toContain("live uncertainty");
     expect((await runtime.status()).remediationPlan?.plannerJob?.binding?.agentId).toBe("agent-2");
   });
 });
